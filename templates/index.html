@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LightGBM SHAP Analysis</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <div class="title-group">
+            <h1>LightGBM SHAP Analysis</h1>
+            <p>Mode: Classical SHAP</p>
+        </div>
+        <div class="status-badge" id="statusBadge">
+            <h3>Model Status</h3>
+            <p id="statusText">Checking...</p>
+        </div>
+    </header>
+
+    <div class="control-panel">
+        <div class="control-group">
+            <label for="nProfiles">Profiles to Generate</label>
+            <input type="number" id="nProfiles" value="200" min="1" max="1000">
+        </div>
+        <div class="control-group">
+            <label for="useSynthetic">Use Synthetic Augmentation</label>
+            <div style="display: flex; align-items: center; gap: 10px; height: 100%;">
+                <input type="checkbox" id="useSynthetic">
+            </div>
+        </div>
+        <div class="control-group">
+            <label for="sampleIndex">Waterfall Sample Index</label>
+            <input type="number" id="sampleIndex" value="0" min="0">
+        </div>
+        
+        <div class="spinner" id="loadingSpinner"></div>
+        <button class="btn-primary" id="runBtn" onclick="runAnalysis()">▶ Run Analysis</button>
+    </div>
+
+    <div class="error-banner" id="errorBanner"></div>
+
+    <div class="results-grid" id="resultsGrid">
+        
+        <div class="card" style="grid-column: 1 / 2; overflow-x: auto;">
+            <h3>Attribution Table</h3>
+            <table id="attributionTable">
+                <thead>
+                    <tr>
+                        <th>Rank</th>
+                        <th>Feature</th>
+                        <th>Mean |SHAP|</th>
+                        <th>Impact</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+
+        <div class="card" style="grid-column: 2 / 3;">
+            <h3>Summary Bar Chart</h3>
+            <img id="summaryBar" src="" alt="Summary Bar Chart" onclick="openModal(this.src)">
+        </div>
+        
+        <div class="card full-width">
+            <h3>Actual Weights (LGBM Gain) vs Classical SHAP</h3>
+            <img id="shapVsWeights" src="" alt="SHAP vs Weights" onclick="openModal(this.src)" style="max-height: 500px; object-fit: contain;">
+        </div>
+
+        <div class="card">
+            <h3>Beeswarm Plot</h3>
+            <img id="beeswarmPlot" src="" alt="Beeswarm Plot" onclick="openModal(this.src)">
+        </div>
+
+        <div class="card">
+            <h3>Waterfall (Sample)</h3>
+            <img id="waterfallPlot" src="" alt="Waterfall Plot" onclick="openModal(this.src)">
+        </div>
+
+        <div class="card full-width">
+            <h3>Prediction Distribution</h3>
+            <img id="predictionDist" src="" alt="Prediction Distribution" onclick="openModal(this.src)">
+        </div>
+    </div>
+
+    <footer>
+        <span>Mode 1 of 6 — Classical SHAP</span>
+        <span>Next: Causal SHAP</span>
+    </footer>
+</div>
+
+<!-- Modal for full size images -->
+<div id="imageModal" class="modal">
+  <span class="close" onclick="closeModal()">&times;</span>
+  <img class="modal-content" id="modalImg">
+</div>
+
+<script>
+    let metadata = null;
+
+    // On load
+    document.addEventListener("DOMContentLoaded", () => {
+        fetch('/api/status')
+            .then(res => res.json())
+            .then(data => {
+                const statusText = document.getElementById("statusText");
+                if (data.status === 'ready') {
+                    metadata = data.metadata;
+                    statusText.innerHTML = `AUC: ${data.model_info.auc_test.toFixed(3)} | Features: ${data.model_info.n_features}`;
+                    statusText.style.color = 'var(--accent-green)';
+                } else {
+                    statusText.innerText = "Model not loaded. Run setup first.";
+                    statusText.style.color = 'var(--accent-red)';
+                    document.getElementById('runBtn').disabled = true;
+                }
+            })
+            .catch(err => console.error(err));
+    });
+
+    async function runAnalysis() {
+        const btn = document.getElementById('runBtn');
+        const spinner = document.getElementById('loadingSpinner');
+        const resultsGrid = document.getElementById('resultsGrid');
+        const errorBanner = document.getElementById('errorBanner');
+        
+        const nProfiles = document.getElementById('nProfiles').value;
+        const useSynthetic = document.getElementById('useSynthetic').checked;
+        const sampleIndex = document.getElementById('sampleIndex').value;
+
+        btn.disabled = true;
+        spinner.style.display = 'block';
+        errorBanner.style.display = 'none';
+        resultsGrid.style.display = 'none';
+        btn.innerText = "Running...";
+
+        try {
+            const response = await fetch('/api/run-analysis', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    n_profiles: parseInt(nProfiles),
+                    use_synthetic: useSynthetic,
+                    sample_index_for_waterfall: parseInt(sampleIndex)
+                })
+            });
+
+            const data = await response.json();
+
+            if (data.status === 'error') {
+                showError(data.message + " " + data.errors.join(", "));
+            } else {
+                renderResults(data);
+            }
+        } catch (e) {
+            showError("Network error or server down. Check console.");
+        } finally {
+            btn.disabled = false;
+            spinner.style.display = 'none';
+            btn.innerText = "▶ Run Analysis";
+        }
+    }
+
+    function renderResults(data) {
+        document.getElementById('resultsGrid').style.display = 'grid';
+        
+        // Render Images
+        document.getElementById('summaryBar').src = "data:image/png;base64," + data.plots.summary_bar;
+        document.getElementById('shapVsWeights').src = "data:image/png;base64," + data.plots.shap_vs_weights;
+        document.getElementById('beeswarmPlot').src = "data:image/png;base64," + data.plots.beeswarm;
+        document.getElementById('waterfallPlot').src = "data:image/png;base64," + data.plots.waterfall;
+        document.getElementById('predictionDist').src = "data:image/png;base64," + data.plots.prediction_distribution;
+
+        // Render Table
+        const tbody = document.querySelector('#attributionTable tbody');
+        tbody.innerHTML = "";
+        
+        let mutableList = metadata ? metadata.mutable_indices.map(i => metadata.feature_names[i]) : [];
+        let immutableList = metadata ? metadata.immutable_indices.map(i => metadata.feature_names[i]) : [];
+
+        data.shap_results.attribution_table.forEach(row => {
+            const tr = document.createElement('tr');
+            
+            let featureClass = "";
+            if (mutableList.includes(row.feature)) featureClass = "mutable";
+            if (immutableList.includes(row.feature)) featureClass = "immutable";
+
+            tr.innerHTML = `
+                <td>${row.rank}</td>
+                <td class="${featureClass}">${row.feature}</td>
+                <td>${row.mean_abs_shap.toFixed(4)} (${row.pct.toFixed(1)}%)</td>
+                <td style="color: ${row.direction==='positive' ? 'var(--accent-green)' : 'var(--accent-red)'}">
+                    ${row.direction === 'positive' ? '↑ Positive' : '↓ Negative'}
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+    }
+
+    function showError(msg) {
+        const errorBanner = document.getElementById('errorBanner');
+        errorBanner.innerText = msg;
+        errorBanner.style.display = 'block';
+    }
+
+    // Modal logic
+    const modal = document.getElementById("imageModal");
+    const modalImg = document.getElementById("modalImg");
+    
+    function openModal(src) {
+        modal.style.display = "block";
+        modalImg.src = src;
+    }
+    
+    function closeModal() {
+        modal.style.display = "none";
+    }
+    
+    // Close modal on outside click
+    window.onclick = function(event) {
+        if (event.target == modal) {
+            modal.style.display = "none";
+        }
+    }
+</script>
+
+</body>
+</html>

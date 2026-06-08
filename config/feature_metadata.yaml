@@ -1,0 +1,42 @@
+dataset: adult_income
+
+target_column: income
+positive_class: ">50K"
+
+sensitive_features:
+  - sex
+  - race
+
+mutable_features:
+  - education_num
+  - hours_per_week
+  - workclass
+  - occupation
+  - capital_gain
+  - capital_loss
+  - marital_status
+
+immutable_features:
+  - age
+  - sex
+  - race
+  - native_country
+  - relationship
+
+categorical_features:
+  - workclass
+  - education
+  - marital_status
+  - occupation
+  - relationship
+  - race
+  - sex
+  - native_country
+
+continuous_features:
+  - age
+  - fnlwgt
+  - education_num
+  - capital_gain
+  - capital_loss
+  - hours_per_week

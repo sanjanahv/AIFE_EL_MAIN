@@ -1,0 +1,163 @@
+import os
+import json
+import time
+from flask import Flask, render_template, request, jsonify
+import joblib
+import pandas as pd
+import yaml
+
+from profile_generator.generator import ProfileGenerator
+from explainers.method2_classical_shap import ClassicalSHAPExplainer
+from analysis.visualise import (
+    plot_shap_summary,
+    plot_shap_beeswarm,
+    plot_waterfall_single,
+    plot_prediction_distribution,
+    plot_shap_vs_weights,
+    get_attribution_table
+)
+
+app = Flask(__name__)
+
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+CONFIG_DIR = os.path.join(PROJECT_ROOT, "config")
+DATA_DIR = os.path.join(PROJECT_ROOT, "data")
+MODELS_DIR = os.path.join(PROJECT_ROOT, "models")
+
+def get_model_info():
+    info_path = os.path.join(MODELS_DIR, "model_info.json")
+    if os.path.exists(info_path):
+        with open(info_path, 'r') as f:
+            return json.load(f)
+    return None
+
+def get_metadata():
+    metadata_path = os.path.join(DATA_DIR, "processed", "metadata.json")
+    if os.path.exists(metadata_path):
+        with open(metadata_path, 'r') as f:
+            return json.load(f)
+    return None
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/api/status', methods=['GET'])
+def status():
+    model_info = get_model_info()
+    metadata = get_metadata()
+    
+    if model_info and metadata:
+        return jsonify({
+            "status": "ready",
+            "model_info": model_info,
+            "metadata": metadata
+        })
+    else:
+        return jsonify({
+            "status": "not_ready",
+            "message": "Model or data not found. Please run setup script first."
+        })
+
+@app.route('/api/model-info', methods=['GET'])
+def model_info():
+    info = get_model_info()
+    if info:
+        return jsonify(info)
+    return jsonify({"error": "Model info not found"}), 404
+
+@app.route('/api/run-analysis', methods=['POST'])
+def run_analysis():
+    errors = []
+    try:
+        req_data = request.json or {}
+        n_profiles = int(req_data.get('n_profiles', 200))
+        use_synthetic = bool(req_data.get('use_synthetic', False))
+        sample_index = int(req_data.get('sample_index_for_waterfall', 0))
+        
+        start_time = time.time()
+        
+        # 1. Load Model
+        model_path = os.path.join(MODELS_DIR, "model.pkl")
+        if not os.path.exists(model_path):
+            raise FileNotFoundError("Model not found. Run setup first.")
+        model = joblib.load(model_path)
+        
+        # 2. Generator
+        config_path = os.path.join(CONFIG_DIR, "hyperparameters.yaml")
+        metadata_path = os.path.join(DATA_DIR, "processed", "metadata.json")
+        generator = ProfileGenerator(config_path, metadata_path, DATA_DIR)
+        
+        # 3. Generate profiles
+        profiles = generator.generate(n_profiles=n_profiles, use_synthetic=use_synthetic)
+        
+        # 4. Assert profile dimensions (handled in generator, but double check)
+        assert profiles.shape[1] == generator.n_features
+        
+        # 5. Explainer
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+            
+        # Background data for TreeExplainer
+        background_samples = config['shap'].get('background_samples', 100)
+        X_train = pd.read_parquet(os.path.join(DATA_DIR, "processed", "X_train.parquet"))
+        background_data = X_train.sample(n=min(background_samples, len(X_train)), random_state=42)
+        
+        model_info_path = os.path.join(MODELS_DIR, "model_info.json")
+        explainer = ClassicalSHAPExplainer(model, background_data, generator.feature_names, config, model_info_path=model_info_path)
+        
+        # Run SHAP
+        shap_result = explainer.explain(profiles)
+        
+        # 6. Generate Plots
+        summary_bar = plot_shap_summary(shap_result)
+        beeswarm = plot_shap_beeswarm(shap_result)
+        
+        if sample_index >= len(profiles):
+            sample_index = 0
+            
+        waterfall = plot_waterfall_single(shap_result, sample_index)
+        pred_dist = plot_prediction_distribution(model, profiles, shap_result)
+        shap_vs_weights = plot_shap_vs_weights(shap_result)
+        
+        attribution_table = explainer.get_summary(shap_result)
+        
+        computation_time = time.time() - start_time
+        
+        model_info = get_model_info()
+        
+        return jsonify({
+            "status": "success",
+            "model_info": {
+                "auc": model_info.get("auc_test"),
+                "accuracy": model_info.get("accuracy_test"),
+                "n_features": model_info.get("n_features"),
+                "feature_names": model_info.get("feature_names")
+            },
+            "profiles_generated": len(profiles),
+            "shap_results": {
+                "attribution_table": attribution_table,
+                "n_profiles_analysed": len(profiles),
+                "base_value": shap_result["base_value"],
+                "computation_time_seconds": round(computation_time, 2)
+            },
+            "plots": {
+                "summary_bar": summary_bar,
+                "beeswarm": beeswarm,
+                "waterfall": waterfall,
+                "prediction_distribution": pred_dist,
+                "shap_vs_weights": shap_vs_weights
+            },
+            "errors": errors
+        })
+        
+    except Exception as e:
+        errors.append(str(e))
+        return jsonify({
+            "status": "error",
+            "message": "An error occurred during analysis.",
+            "errors": errors
+        })
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)

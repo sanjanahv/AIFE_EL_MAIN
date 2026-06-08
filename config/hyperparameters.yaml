@@ -1,0 +1,24 @@
+random_seed: 42
+test_size: 0.2
+stratify: true
+
+lightgbm:
+  n_estimators: 500
+  learning_rate: 0.05
+  max_depth: 6
+  num_leaves: 31
+  min_child_samples: 20
+  subsample: 0.8
+  colsample_bytree: 0.8
+  class_weight: balanced
+  early_stopping_rounds: 50
+
+profile_generator:
+  n_real_profiles: 200
+  use_synthetic: false
+  n_synthetic_profiles: 100
+  synthetic_noise_factor: 0.05
+
+shap:
+  background_samples: 100
+  max_display_features: 15
