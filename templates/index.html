@@ -1,264 +1,1174 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LightGBM SHAP Analysis</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AIFEEL — AI Fairness Explainability Lab</title>
+  <meta name="description" content="AIFEEL: Compare Classical, Causal, and Layer-wise SHAP explanations on a LightGBM income prediction model.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    /* ──────────────────────────────────────────────
+       DESIGN TOKENS
+    ────────────────────────────────────────────── */
+    :root {
+      --bg:        #0A0F1E;
+      --bg2:       #111827;
+      --bg3:       #1A2235;
+      --bg4:       #243048;
+      --border:    rgba(255,255,255,0.07);
+      --border2:   rgba(255,255,255,0.12);
+
+      --m2:        #3B82F6;   /* Classical SHAP – blue  */
+      --m2-glow:   rgba(59,130,246,0.25);
+      --m3:        #10B981;   /* Causal SHAP   – green  */
+      --m3-glow:   rgba(16,185,129,0.25);
+      --m4:        #F59E0B;   /* Layerwise     – amber  */
+      --m4-glow:   rgba(245,158,11,0.25);
+
+      --red:       #EF4444;
+      --green:     #10B981;
+      --purple:    #8B5CF6;
+      --text:      #F1F5F9;
+      --muted:     #64748B;
+      --sub:       #94A3B8;
+
+      --radius:    14px;
+      --radius-sm: 8px;
+      --shadow:    0 4px 32px rgba(0,0,0,0.5);
+    }
+
+    /* ──────────────────────────────────────────────
+       RESET & BASE
+    ────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+
+    /* ──────────────────────────────────────────────
+       ANIMATED BACKGROUND GRID
+    ────────────────────────────────────────────── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        linear-gradient(rgba(59,130,246,0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(59,130,246,0.03) 1px, transparent 1px);
+      background-size: 48px 48px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ──────────────────────────────────────────────
+       LAYOUT
+    ────────────────────────────────────────────── */
+    .page { position: relative; z-index: 1; max-width: 1400px; margin: 0 auto; padding: 0 24px 80px; }
+
+    /* ──────────────────────────────────────────────
+       HEADER
+    ────────────────────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 16px;
+      padding: 28px 0 24px;
+      border-bottom: 1px solid var(--border);
+    }
+    .logo-group { display: flex; align-items: center; gap: 16px; }
+    .logo-icon {
+      width: 48px; height: 48px;
+      background: linear-gradient(135deg, var(--m2), var(--purple));
+      border-radius: 12px;
+      display: grid; place-items: center;
+      font-size: 22px;
+      box-shadow: 0 0 24px var(--m2-glow);
+    }
+    .logo-text h1 { font-size: 22px; font-weight: 800; letter-spacing: -0.5px; }
+    .logo-text p  { font-size: 12px; color: var(--sub); margin-top: 2px; }
+
+    .header-stats {
+      display: flex; gap: 20px; flex-wrap: wrap; align-items: center;
+    }
+    .stat-pill {
+      display: flex; align-items: center; gap: 8px;
+      background: var(--bg3);
+      border: 1px solid var(--border2);
+      border-radius: 99px;
+      padding: 6px 14px;
+      font-size: 13px;
+    }
+    .stat-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+    .stat-pill .dot.loading { background: var(--m4); animation: pulse 1.2s infinite; }
+    .stat-pill .dot.err     { background: var(--red); }
+
+    /* ──────────────────────────────────────────────
+       PIPELINE FLOW BAR
+    ────────────────────────────────────────────── */
+    .pipeline {
+      margin: 28px 0;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+    }
+    .pipeline-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--muted); margin-bottom: 16px; }
+    .pipeline-nodes {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      overflow-x: auto;
+      padding-bottom: 4px;
+    }
+    .pipeline-node {
+      display: flex; flex-direction: column; align-items: center;
+      min-width: 100px; flex-shrink: 0;
+    }
+    .pipe-box {
+      padding: 8px 16px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border2);
+      font-size: 12px; font-weight: 600;
+      text-align: center;
+      background: var(--bg3);
+      color: var(--sub);
+      white-space: nowrap;
+      transition: all 0.3s;
+    }
+    .pipe-box.active { background: var(--bg4); color: var(--text); border-color: var(--m2); box-shadow: 0 0 12px var(--m2-glow); }
+    .pipe-box.output2 { border-color: var(--m2); color: var(--m2); }
+    .pipe-box.output3 { border-color: var(--m3); color: var(--m3); }
+    .pipe-box.output4 { border-color: var(--m4); color: var(--m4); }
+    .pipe-arrow {
+      flex: 1; height: 2px; background: linear-gradient(90deg, var(--border2), transparent);
+      min-width: 20px;
+      position: relative;
+    }
+    .pipe-arrow::after {
+      content: '›';
+      position: absolute;
+      right: -2px; top: 50%;
+      transform: translateY(-50%);
+      color: var(--muted); font-size: 14px; line-height: 0;
+    }
+
+    /* ──────────────────────────────────────────────
+       CONTROLS
+    ────────────────────────────────────────────── */
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+    .ctrl-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 14px 16px;
+    }
+    .ctrl-card label { display: block; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 8px; }
+    .ctrl-card input[type="number"] {
+      width: 100%; background: var(--bg3);
+      border: 1px solid var(--border2);
+      border-radius: 6px; padding: 8px 10px;
+      color: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 14px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .ctrl-card input[type="number"]:focus { border-color: var(--m2); }
+    .toggle-wrap { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+    .toggle {
+      position: relative; width: 40px; height: 22px;
+      flex-shrink: 0;
+    }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle-slider {
+      position: absolute; inset: 0;
+      background: var(--bg4);
+      border-radius: 99px;
+      cursor: pointer;
+      transition: 0.3s;
+      border: 1px solid var(--border2);
+    }
+    .toggle-slider::before {
+      content: '';
+      position: absolute;
+      width: 16px; height: 16px;
+      left: 2px; top: 2px;
+      background: var(--sub);
+      border-radius: 50%;
+      transition: 0.3s;
+    }
+    .toggle input:checked + .toggle-slider { background: var(--m2); border-color: var(--m2); }
+    .toggle input:checked + .toggle-slider::before { transform: translateX(18px); background: white; }
+    .toggle-label { font-size: 13px; color: var(--sub); }
+
+    /* ──────────────────────────────────────────────
+       RUN BUTTONS
+    ────────────────────────────────────────────── */
+    .run-buttons {
+      display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 28px; align-items: center;
+    }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 12px 22px;
+      border-radius: var(--radius-sm);
+      font-size: 14px; font-weight: 600;
+      border: none; cursor: pointer;
+      transition: all 0.2s;
+      position: relative; overflow: hidden;
+    }
+    .btn::after {
+      content: ''; position: absolute;
+      inset: 0; background: white;
+      opacity: 0; transition: opacity 0.15s;
+    }
+    .btn:hover::after { opacity: 0.06; }
+    .btn:active { transform: scale(0.97); }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn-m2 { background: linear-gradient(135deg, var(--m2), #2563EB); color: white; box-shadow: 0 4px 16px var(--m2-glow); }
+    .btn-m3 { background: linear-gradient(135deg, var(--m3), #059669); color: white; box-shadow: 0 4px 16px var(--m3-glow); }
+    .btn-m4 { background: linear-gradient(135deg, var(--m4), #D97706); color: white; box-shadow: 0 4px 16px var(--m4-glow); }
+    .btn-icon { font-size: 16px; }
+    .spin { animation: spin 0.8s linear infinite; }
+
+    /* ──────────────────────────────────────────────
+       ERROR BANNER
+    ────────────────────────────────────────────── */
+    .error-banner {
+      display: none;
+      background: rgba(239,68,68,0.12);
+      border: 1px solid rgba(239,68,68,0.4);
+      border-radius: var(--radius-sm);
+      padding: 14px 18px;
+      margin-bottom: 20px;
+      color: #FCA5A5;
+      font-size: 13px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* ──────────────────────────────────────────────
+       LOADING OVERLAY
+    ────────────────────────────────────────────── */
+    .loading-overlay {
+      display: none;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 40px;
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    .loading-overlay.show { display: block; }
+    .loader-ring {
+      width: 48px; height: 48px;
+      border: 3px solid var(--border2);
+      border-top-color: var(--m2);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 16px;
+    }
+    .loader-ring.causal { border-top-color: var(--m3); }
+    .loader-ring.layerwise { border-top-color: var(--m4); }
+    .loading-title { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+    .loading-sub { font-size: 13px; color: var(--sub); }
+    .loading-steps { display: flex; justify-content: center; gap: 8px; margin-top: 20px; flex-wrap: wrap; }
+    .step-chip {
+      padding: 5px 12px;
+      border-radius: 99px;
+      border: 1px solid var(--border2);
+      font-size: 11px;
+      color: var(--muted);
+      transition: all 0.4s;
+    }
+    .step-chip.active { border-color: var(--m2); color: var(--m2); background: var(--m2-glow); }
+
+    /* ──────────────────────────────────────────────
+       RESULTS SECTION
+    ────────────────────────────────────────────── */
+    #resultsSection { display: none; }
+    #resultsSection.show { display: block; }
+
+    .results-header {
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 12px;
+      margin-bottom: 20px;
+    }
+    .results-method-badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 6px 16px;
+      border-radius: 99px;
+      font-size: 13px; font-weight: 600;
+      border: 1px solid;
+    }
+    .badge-m2 { border-color: var(--m2); color: var(--m2); background: var(--m2-glow); }
+    .badge-m3 { border-color: var(--m3); color: var(--m3); background: var(--m3-glow); }
+    .badge-m4 { border-color: var(--m4); color: var(--m4); background: var(--m4-glow); }
+
+    .meta-chips { display: flex; gap: 10px; flex-wrap: wrap; }
+    .meta-chip {
+      padding: 4px 12px;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 99px;
+      font-size: 12px; color: var(--sub);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* ──────────────────────────────────────────────
+       TABS
+    ────────────────────────────────────────────── */
+    .tabs {
+      display: flex; gap: 4px;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 4px;
+      margin-bottom: 20px;
+      overflow-x: auto;
+    }
+    .tab-btn {
+      padding: 8px 16px;
+      border-radius: 6px;
+      border: none;
+      background: transparent;
+      color: var(--sub);
+      font-family: 'Inter', sans-serif;
+      font-size: 13px; font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+    .tab-btn:hover { color: var(--text); background: var(--bg3); }
+    .tab-btn.active { background: var(--bg4); color: var(--text); font-weight: 600; }
+
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* ──────────────────────────────────────────────
+       CARDS & GRIDS
+    ────────────────────────────────────────────── */
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+    .grid-3-1 { display: grid; grid-template-columns: 1fr 2fr; gap: 16px; }
+    .full { grid-column: 1 / -1; }
+
+    @media (max-width: 900px) {
+      .grid-2, .grid-3, .grid-3-1 { grid-template-columns: 1fr; }
+      .full { grid-column: 1; }
+    }
+
+    .card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      transition: border-color 0.2s;
+    }
+    .card:hover { border-color: var(--border2); }
+    .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+    .card-title { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: var(--sub); }
+    .card-badge {
+      font-size: 10px; padding: 2px 8px;
+      border-radius: 99px;
+      background: var(--bg3);
+      border: 1px solid var(--border2);
+      color: var(--muted);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* ──────────────────────────────────────────────
+       PLOT IMAGES
+    ────────────────────────────────────────────── */
+    .plot-img {
+      width: 100%;
+      border-radius: 8px;
+      cursor: zoom-in;
+      transition: transform 0.2s, box-shadow 0.2s;
+      background: white;
+    }
+    .plot-img:hover { transform: scale(1.01); box-shadow: 0 8px 32px rgba(0,0,0,0.6); }
+
+    /* ──────────────────────────────────────────────
+       ATTRIBUTION TABLE
+    ────────────────────────────────────────────── */
+    .attr-table-wrap { overflow-x: auto; max-height: 420px; overflow-y: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    thead th {
+      position: sticky; top: 0;
+      padding: 10px 12px;
+      background: var(--bg3);
+      color: var(--sub);
+      font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px;
+      text-align: left;
+      border-bottom: 1px solid var(--border2);
+      white-space: nowrap;
+    }
+    tbody tr { border-bottom: 1px solid var(--border); transition: background 0.15s; }
+    tbody tr:hover { background: var(--bg3); }
+    tbody td { padding: 9px 12px; }
+    .rank-cell { font-family: 'JetBrains Mono', monospace; color: var(--muted); font-size: 12px; }
+    .feat-cell { font-weight: 600; }
+    .feat-mutable { color: #60A5FA; }
+    .feat-immutable { color: #F87171; }
+    .feat-protected { color: var(--red); }
+    .feat-proxy { color: var(--m4); }
+    .shap-cell { font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+    .bar-cell { min-width: 80px; }
+    .pct-bar { height: 6px; border-radius: 99px; background: var(--m2); margin-top: 3px; }
+    .dir-pos { color: var(--green); font-size: 12px; }
+    .dir-neg { color: var(--red); font-size: 12px; }
+    .tag { display: inline-block; font-size: 10px; padding: 1px 7px; border-radius: 99px; border: 1px solid; margin-left: 4px; }
+    .tag-proxy { border-color: var(--m4); color: var(--m4); }
+    .tag-protected { border-color: var(--red); color: var(--red); }
+
+    /* ──────────────────────────────────────────────
+       LAYER-WISE DEPTH LEGEND
+    ────────────────────────────────────────────── */
+    .depth-legend {
+      display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px;
+    }
+    .depth-chip {
+      padding: 4px 12px;
+      border-radius: 99px;
+      font-size: 12px;
+      border: 1px solid var(--m4);
+      color: var(--m4);
+      background: var(--m4-glow);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* ──────────────────────────────────────────────
+       INFO BLOCKS (causal graph info)
+    ────────────────────────────────────────────── */
+    .info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .info-block {
+      background: var(--bg3);
+      border: 1px solid var(--border2);
+      border-radius: var(--radius-sm);
+      padding: 12px 16px;
+    }
+    .info-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 4px; }
+    .info-val { font-size: 18px; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+    .info-val.green { color: var(--green); }
+    .info-val.amber { color: var(--m4); }
+    .info-val.blue  { color: var(--m2); }
+
+    /* ──────────────────────────────────────────────
+       CAUSAL GRAPH INFO TAGS
+    ────────────────────────────────────────────── */
+    .tag-list { display: flex; gap: 6px; flex-wrap: wrap; }
+    .tag-item {
+      padding: 3px 10px;
+      border-radius: 99px;
+      font-size: 11px;
+      font-weight: 600;
+      border: 1px solid;
+    }
+
+    /* ──────────────────────────────────────────────
+       LEGEND KEY
+    ────────────────────────────────────────────── */
+    .legend {
+      display: flex; gap: 16px; flex-wrap: wrap;
+      padding: 10px 14px;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      margin-bottom: 12px;
+    }
+    .legend-item { display: flex; align-items: center; gap: 6px; }
+    .legend-dot { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+
+    /* ──────────────────────────────────────────────
+       IMAGE MODAL
+    ────────────────────────────────────────────── */
+    .modal {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.85);
+      z-index: 1000;
+      cursor: zoom-out;
+      backdrop-filter: blur(6px);
+      place-items: center;
+    }
+    .modal.show { display: grid; }
+    .modal-inner {
+      position: relative;
+      max-width: 90vw; max-height: 90vh;
+    }
+    .modal-img {
+      max-width: 100%; max-height: 90vh;
+      border-radius: 12px;
+      box-shadow: 0 24px 80px rgba(0,0,0,0.8);
+      background: white;
+    }
+    .modal-close {
+      position: absolute; top: -16px; right: -16px;
+      width: 32px; height: 32px;
+      background: var(--bg4);
+      border: 1px solid var(--border2);
+      border-radius: 50%;
+      font-size: 18px; color: var(--text);
+      cursor: pointer;
+      display: grid; place-items: center;
+      line-height: 1;
+    }
+
+    /* ──────────────────────────────────────────────
+       FOOTER
+    ────────────────────────────────────────────── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 20px 0;
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 12px;
+      font-size: 12px; color: var(--muted);
+      margin-top: 40px;
+    }
+    .footer-pipeline { display: flex; align-items: center; gap: 8px; }
+    .fp-node {
+      padding: 4px 10px;
+      border-radius: 99px;
+      font-size: 11px; font-weight: 600;
+    }
+    .fp-active { background: var(--bg3); border: 1px solid var(--border2); color: var(--text); }
+    .fp-done   { background: rgba(16,185,129,0.15); border: 1px solid var(--m3); color: var(--m3); }
+    .fp-future { border: 1px dashed var(--border2); color: var(--muted); }
+
+    /* ──────────────────────────────────────────────
+       ANIMATIONS
+    ────────────────────────────────────────────── */
+    @keyframes spin  { to { transform: rotate(360deg); } }
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .fade-in { animation: fadeIn 0.4s ease both; }
+  </style>
 </head>
 <body>
+<div class="page">
 
-<div class="container">
-    <header>
-        <div class="title-group">
-            <h1>LightGBM SHAP Analysis</h1>
-            <p>Mode: Classical SHAP</p>
-        </div>
-        <div class="status-badge" id="statusBadge">
-            <h3>Model Status</h3>
-            <p id="statusText">Checking...</p>
-        </div>
-    </header>
+  <!-- ── HEADER ──────────────────────────────────── -->
+  <header>
+    <div class="logo-group">
+      <div class="logo-icon">🧠</div>
+      <div class="logo-text">
+        <h1>AIFEEL</h1>
+        <p>AI Fairness &amp; Explainability Lab · UCI Adult Income · LightGBM</p>
+      </div>
+    </div>
+    <div class="header-stats" id="headerStats">
+      <div class="stat-pill">
+        <div class="dot loading" id="statusDot"></div>
+        <span id="statusText">Connecting…</span>
+      </div>
+    </div>
+  </header>
 
-    <div class="control-panel">
-        <div class="control-group">
-            <label for="nProfiles">Profiles to Generate</label>
-            <input type="number" id="nProfiles" value="200" min="1" max="1000">
+  <!-- ── PIPELINE FLOW ────────────────────────────── -->
+  <div class="pipeline">
+    <div class="pipeline-label">System Architecture — your diagram</div>
+    <div class="pipeline-nodes">
+      <div class="pipeline-node">
+        <div class="pipe-box">Dataset<br><small style="color:var(--muted);font-weight:400">UCI Adult</small></div>
+      </div>
+      <div class="pipe-arrow"></div>
+      <div class="pipeline-node">
+        <div class="pipe-box active">Predicting<br>Model</div>
+      </div>
+      <div class="pipe-arrow"></div>
+      <div class="pipeline-node">
+        <div class="pipe-box output2">Output 2<br><small>Regular SHAP</small></div>
+      </div>
+      <div class="pipe-arrow"></div>
+      <div class="pipeline-node">
+        <div class="pipe-box output3">Output 3<br><small>Causal Coalition</small></div>
+      </div>
+      <div class="pipe-arrow"></div>
+      <div class="pipeline-node">
+        <div class="pipe-box output4">Output 4<br><small>Layerwise Local</small></div>
+      </div>
+      <div class="pipe-arrow"></div>
+      <div class="pipeline-node">
+        <div class="pipe-box" style="border-color:var(--purple);color:var(--purple)">Validation &amp;<br>Comparison</div>
+      </div>
+      <div class="pipe-arrow"></div>
+      <div class="pipeline-node">
+        <div class="pipe-box" style="border-color:var(--purple);color:var(--purple)">Debiasing<br>Algo</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── CONTROLS ─────────────────────────────────── -->
+  <div class="controls">
+    <div class="ctrl-card">
+      <label for="nProfiles">Profiles to Analyse</label>
+      <input type="number" id="nProfiles" value="100" min="10" max="500">
+    </div>
+    <div class="ctrl-card">
+      <label for="sampleIndex">Waterfall Sample Index</label>
+      <input type="number" id="sampleIndex" value="0" min="0">
+    </div>
+    <div class="ctrl-card">
+      <label>Synthetic Augmentation</label>
+      <div class="toggle-wrap">
+        <label class="toggle"><input type="checkbox" id="useSynthetic"><div class="toggle-slider"></div></label>
+        <span class="toggle-label">Off (use real test data)</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── RUN BUTTONS ──────────────────────────────── -->
+  <div class="run-buttons">
+    <button class="btn btn-m2" id="btnM2" onclick="runAnalysis('classical')">
+      <span class="btn-icon">⚡</span> Output 2 — Classical SHAP
+    </button>
+    <button class="btn btn-m3" id="btnM3" onclick="runAnalysis('causal')">
+      <span class="btn-icon">🔗</span> Output 3 — Causal SHAP
+      <small style="font-size:10px;opacity:0.75;margin-left:4px">(~2 min)</small>
+    </button>
+    <button class="btn btn-m4" id="btnM4" onclick="runAnalysis('layerwise')">
+      <span class="btn-icon">🔬</span> Output 4 — Layer-wise SHAP
+    </button>
+  </div>
+
+  <!-- ── ERROR BANNER ─────────────────────────────── -->
+  <div class="error-banner" id="errorBanner"></div>
+
+  <!-- ── LOADING ──────────────────────────────────── -->
+  <div class="loading-overlay" id="loadingOverlay">
+    <div class="loader-ring" id="loaderRing"></div>
+    <div class="loading-title" id="loadingTitle">Running analysis…</div>
+    <div class="loading-sub" id="loadingSub">This may take a moment</div>
+    <div class="loading-steps">
+      <span class="step-chip active" id="stepChip1">1 · Generating profiles</span>
+      <span class="step-chip" id="stepChip2">2 · Computing SHAP</span>
+      <span class="step-chip" id="stepChip3">3 · Plotting</span>
+      <span class="step-chip" id="stepChip4">4 · Building response</span>
+    </div>
+  </div>
+
+  <!-- ── RESULTS ──────────────────────────────────── -->
+  <div id="resultsSection">
+
+    <!-- Results header -->
+    <div class="results-header fade-in">
+      <div>
+        <div id="methodBadge" class="results-method-badge badge-m2">⚡ Classical SHAP</div>
+      </div>
+      <div class="meta-chips">
+        <span class="meta-chip" id="metaProfiles"></span>
+        <span class="meta-chip" id="metaAuc"></span>
+        <span class="meta-chip" id="metaTime"></span>
+        <span class="meta-chip" id="metaBase"></span>
+      </div>
+    </div>
+
+    <!-- TABS -->
+    <div class="tabs" id="tabBar">
+      <button class="tab-btn active" id="tabBtn-overview"  onclick="switchTab('overview')">📊 Overview</button>
+      <button class="tab-btn"        id="tabBtn-shap"      onclick="switchTab('shap')">🔍 SHAP Analysis</button>
+      <button class="tab-btn"        id="tabBtn-table"     onclick="switchTab('table')">📋 Attribution Table</button>
+      <button class="tab-btn"        id="tabBtn-special"   onclick="switchTab('special')" id="specialTab">🧬 Method Details</button>
+    </div>
+
+    <!-- TAB: OVERVIEW -->
+    <div class="tab-panel active fade-in" id="panel-overview">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Feature Attribution Summary</div>
+            <div class="card-badge">Mean |SHAP|</div>
+          </div>
+          <img class="plot-img" id="summaryBar" onclick="openModal(this.src)" alt="Summary bar chart">
         </div>
-        <div class="control-group">
-            <label for="useSynthetic">Use Synthetic Augmentation</label>
-            <div style="display: flex; align-items: center; gap: 10px; height: 100%;">
-                <input type="checkbox" id="useSynthetic">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Prediction Distribution</div>
+            <div class="card-badge">All profiles</div>
+          </div>
+          <img class="plot-img" id="predictionDist" onclick="openModal(this.src)" alt="Prediction distribution">
+        </div>
+        <div class="card full">
+          <div class="card-header">
+            <div class="card-title">SHAP vs Model Weights (Gain)</div>
+            <div class="card-badge">Rank correlation</div>
+          </div>
+          <img class="plot-img" id="shapVsWeights" onclick="openModal(this.src)" alt="SHAP vs weights">
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB: SHAP ANALYSIS -->
+    <div class="tab-panel fade-in" id="panel-shap">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Beeswarm Plot</div>
+            <div class="card-badge">SHAP distribution</div>
+          </div>
+          <img class="plot-img" id="beeswarmPlot" onclick="openModal(this.src)" alt="Beeswarm plot">
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Waterfall — Single Sample</div>
+            <div class="card-badge" id="waterfallSampleBadge">sample 0</div>
+          </div>
+          <img class="plot-img" id="waterfallPlot" onclick="openModal(this.src)" alt="Waterfall plot">
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB: ATTRIBUTION TABLE -->
+    <div class="tab-panel fade-in" id="panel-table">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Feature Attribution Ranking</div>
+          <div id="tableLegend"></div>
+        </div>
+        <div class="legend" id="attrLegend">
+          <div class="legend-item"><div class="legend-dot" style="background:#60A5FA"></div>Mutable feature</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#F87171"></div>Immutable feature</div>
+          <div class="legend-item" id="legendProxy" style="display:none"><div class="legend-dot" style="background:var(--m4)"></div>Proxy candidate</div>
+          <div class="legend-item" id="legendProtected" style="display:none"><div class="legend-dot" style="background:var(--red)"></div>Protected attribute</div>
+        </div>
+        <div class="attr-table-wrap">
+          <table id="attributionTable">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Feature</th>
+                <th>Mean |SHAP|</th>
+                <th>% Impact</th>
+                <th>Direction</th>
+                <th>Tags</th>
+              </tr>
+            </thead>
+            <tbody id="attrTbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB: METHOD DETAILS -->
+    <div class="tab-panel fade-in" id="panel-special">
+      <!-- Causal section (hidden unless method=causal) -->
+      <div id="causalSection" style="display:none">
+        <div class="info-grid" id="causalInfoGrid"></div>
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Protected Attributes</div>
+              <div class="card-badge">Fairness signals</div>
             </div>
+            <div class="tag-list" id="protectedList"></div>
+            <div style="margin-top:12px">
+              <div class="card-title" style="margin-bottom:8px">Proxy Candidates</div>
+              <div class="tag-list" id="proxyList"></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Causal Plausibility Matrix</div>
+              <div class="card-badge">d-connectivity</div>
+            </div>
+            <img class="plot-img" id="causalHeatmap" onclick="openModal(this.src)" alt="Causal heatmap">
+          </div>
         </div>
-        <div class="control-group">
-            <label for="sampleIndex">Waterfall Sample Index</label>
-            <input type="number" id="sampleIndex" value="0" min="0">
-        </div>
-        
-        <div class="spinner" id="loadingSpinner"></div>
-        <div class="mode-selector" style="display: flex; gap: 10px;">
-          <button id="btn-classical" class="btn-primary" onclick="runAnalysis('classical')">
-            ▶ Method 2: Classical SHAP
-          </button>
-          <button id="btn-causal" class="btn-primary" onclick="runAnalysis('causal')">
-            ▶ Method 3: Causal SHAP
-          </button>
-        </div>
-    </div>
+      </div>
 
-    <div class="error-banner" id="errorBanner"></div>
-
-    <div class="results-grid" id="resultsGrid">
-        
-        <div class="card" style="grid-column: 1 / 2; overflow-x: auto;">
-            <h3>Attribution Table</h3>
-            <table id="attributionTable">
-                <thead>
-                    <tr>
-                        <th>Rank</th>
-                        <th>Feature</th>
-                        <th>Mean |SHAP|</th>
-                        <th>Impact</th>
-                    </tr>
-                </thead>
-                <tbody></tbody>
-            </table>
+      <!-- Layerwise section (hidden unless method=layerwise) -->
+      <div id="layerwiseSection" style="display:none">
+        <div class="info-grid" id="layerwiseInfoGrid"></div>
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header">
+            <div class="card-title">Depth Levels Computed</div>
+            <div class="card-badge">Tree split depths</div>
+          </div>
+          <div class="depth-legend" id="depthLegend"></div>
+          <p style="font-size:12px;color:var(--sub);margin-top:8px">
+            <strong>depth_0</strong> = first split in each tree (coarse, most impactful decision).<br>
+            Deeper levels = fine-grained, interaction-driven refinements. Sum across all depths ≈ standard SHAP value.
+          </p>
         </div>
-
-        <div class="card" style="grid-column: 2 / 3;">
-            <h3>Summary Bar Chart</h3>
-            <img id="summaryBar" src="" alt="Summary Bar Chart" onclick="openModal(this.src)">
-        </div>
-        
-        <div class="card full-width">
-            <h3>Actual Weights (LGBM Gain) vs Classical SHAP</h3>
-            <img id="shapVsWeights" src="" alt="SHAP vs Weights" onclick="openModal(this.src)" style="max-height: 500px; object-fit: contain;">
-        </div>
-
-        <div class="card full-width" id="causalHeatmapCard" style="display: none;">
-            <h3>Causal Plausibility Matrix</h3>
-            <img id="causalHeatmap" src="" alt="Causal Heatmap" onclick="openModal(this.src)" style="max-height: 500px; object-fit: contain;">
-        </div>
-
         <div class="card">
-            <h3>Beeswarm Plot</h3>
-            <img id="beeswarmPlot" src="" alt="Beeswarm Plot" onclick="openModal(this.src)">
+          <div class="card-header">
+            <div class="card-title">Layer-wise Depth Heatmap</div>
+            <div class="card-badge">Mean |contribution| by feature × depth</div>
+          </div>
+          <img class="plot-img" id="layerwiseHeatmap" onclick="openModal(this.src)" alt="Layerwise heatmap">
         </div>
+      </div>
 
+      <!-- Classical fallback -->
+      <div id="classicalSection">
         <div class="card">
-            <h3>Waterfall (Sample)</h3>
-            <img id="waterfallPlot" src="" alt="Waterfall Plot" onclick="openModal(this.src)">
+          <div class="card-header">
+            <div class="card-title">Method 2 — Classical SHAP</div>
+          </div>
+          <p style="font-size:13px;color:var(--sub);line-height:1.8">
+            Uses uniform Shapley coalition weights: <code style="background:var(--bg3);padding:2px 6px;border-radius:4px;font-size:12px">w(S) = |S|!(|F|−|S|−1)! / |F|!</code><br>
+            Background dataset (interventional): 100 samples from X_train.<br>
+            TreeExplainer with <em>feature_perturbation="interventional"</em>.<br>
+            Run Output 3 (Causal) or Output 4 (Layerwise) to see method-specific details.
+          </p>
         </div>
-
-        <div class="card full-width">
-            <h3>Prediction Distribution</h3>
-            <img id="predictionDist" src="" alt="Prediction Distribution" onclick="openModal(this.src)">
-        </div>
+      </div>
     </div>
+  </div><!-- /resultsSection -->
 
-    <footer>
-        <span>Mode 1 of 6 — Classical SHAP</span>
-        <span>Next: Causal SHAP</span>
-    </footer>
+</div><!-- /page -->
+
+<!-- ── MODAL ─────────────────────────────────────── -->
+<div class="modal" id="imgModal" onclick="closeModal()">
+  <div class="modal-inner" onclick="event.stopPropagation()">
+    <div class="modal-close" onclick="closeModal()">×</div>
+    <img class="modal-img" id="modalImg" src="" alt="Full size plot">
+  </div>
 </div>
 
-<!-- Modal for full size images -->
-<div id="imageModal" class="modal">
-  <span class="close" onclick="closeModal()">&times;</span>
-  <img class="modal-content" id="modalImg">
-</div>
+<footer style="border-top:1px solid var(--border);padding:20px 24px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;font-size:12px;color:var(--muted);max-width:1400px;margin:0 auto;">
+  <div class="footer-pipeline">
+    <span class="fp-node fp-future">Output 1<br>Plain Model</span>
+    <span style="color:var(--border2);padding:0 4px">›</span>
+    <span class="fp-node fp-done">Output 2<br>Classical</span>
+    <span style="color:var(--border2);padding:0 4px">›</span>
+    <span class="fp-node fp-done">Output 3<br>Causal</span>
+    <span style="color:var(--border2);padding:0 4px">›</span>
+    <span class="fp-node fp-done">Output 4<br>Layerwise</span>
+    <span style="color:var(--border2);padding:0 4px">›</span>
+    <span class="fp-node fp-future">Output 5<br>Conditional</span>
+    <span style="color:var(--border2);padding:0 4px">›</span>
+    <span class="fp-node fp-future">Output 6<br>Unified</span>
+    <span style="color:var(--border2);padding:0 4px">›</span>
+    <span class="fp-node fp-future">Output 7<br>SHAP+CF</span>
+  </div>
+  <span>AIFEEL · LightGBM + SHAP · UCI Adult Income</span>
+</footer>
 
 <script>
-    let metadata = null;
+/* ═══════════════════════════════════════════════
+   STATE
+═══════════════════════════════════════════════ */
+let metadata = null;
+let activeMethod = null;
 
-    // On load
-    document.addEventListener("DOMContentLoaded", () => {
-        fetch('/api/status')
-            .then(res => res.json())
-            .then(data => {
-                const statusText = document.getElementById("statusText");
-                if (data.status === 'ready') {
-                    metadata = data.metadata;
-                    statusText.innerHTML = `AUC: ${data.model_info.auc_test.toFixed(3)} | Features: ${data.model_info.n_features}`;
-                    statusText.style.color = 'var(--accent-green)';
-                } else {
-                    statusText.innerText = "Model not loaded. Run setup first.";
-                    statusText.style.color = 'var(--accent-red)';
-                    document.getElementById('runBtn').disabled = true;
-                }
-            })
-            .catch(err => console.error(err));
+/* ═══════════════════════════════════════════════
+   INIT — fetch status on load
+═══════════════════════════════════════════════ */
+document.addEventListener('DOMContentLoaded', () => {
+  fetch('/api/status')
+    .then(r => r.json())
+    .then(d => {
+      const dot  = document.getElementById('statusDot');
+      const text = document.getElementById('statusText');
+      const stats = document.getElementById('headerStats');
+      if (d.status === 'ready') {
+        dot.classList.remove('loading');
+        metadata = d.metadata;
+        text.textContent = 'Model ready';
+        stats.innerHTML = `
+          <div class="stat-pill"><div class="dot"></div><span>Model ready</span></div>
+          <div class="stat-pill">AUC <strong style="color:var(--green);margin-left:4px">${d.model_info.auc_test.toFixed(3)}</strong></div>
+          <div class="stat-pill">Acc <strong style="color:var(--m2);margin-left:4px">${d.model_info.accuracy_test.toFixed(3)}</strong></div>
+          <div class="stat-pill"><strong>${d.model_info.n_features}</strong>&nbsp;features</div>
+        `;
+      } else {
+        dot.classList.remove('loading'); dot.classList.add('err');
+        text.textContent = 'Model not ready — run python run_setup.py first';
+        ['btnM2','btnM3','btnM4'].forEach(id => document.getElementById(id).disabled = true);
+      }
+    })
+    .catch(() => {
+      document.getElementById('statusDot').classList.add('err');
+      document.getElementById('statusText').textContent = 'Server not reachable';
     });
+});
 
-    async function runAnalysis(mode = 'classical') {
-        const btnClassical = document.getElementById('btn-classical');
-        const btnCausal = document.getElementById('btn-causal');
-        const spinner = document.getElementById('loadingSpinner');
-        const resultsGrid = document.getElementById('resultsGrid');
-        const errorBanner = document.getElementById('errorBanner');
-        
-        const nProfiles = document.getElementById('nProfiles').value;
-        const useSynthetic = document.getElementById('useSynthetic').checked;
-        const sampleIndex = document.getElementById('sampleIndex').value;
+/* ═══════════════════════════════════════════════
+   TABS
+═══════════════════════════════════════════════ */
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('tabBtn-' + name).classList.add('active');
+  document.getElementById('panel-' + name).classList.add('active');
+}
 
-        btnClassical.disabled = true;
-        btnCausal.disabled = true;
-        spinner.style.display = 'block';
-        errorBanner.style.display = 'none';
-        resultsGrid.style.display = 'none';
+/* ═══════════════════════════════════════════════
+   RUN ANALYSIS
+═══════════════════════════════════════════════ */
+async function runAnalysis(mode) {
+  const btns = ['btnM2','btnM3','btnM4'].map(id => document.getElementById(id));
+  btns.forEach(b => b.disabled = true);
 
-        const endpoint = mode === 'causal' ? '/api/run-causal-analysis' : '/api/run-analysis';
+  const overlay = document.getElementById('loadingOverlay');
+  const loaderRing = document.getElementById('loaderRing');
+  overlay.classList.add('show');
 
-        try {
-            const response = await fetch(endpoint, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    n_profiles: parseInt(nProfiles),
-                    use_synthetic: useSynthetic,
-                    sample_index_for_waterfall: parseInt(sampleIndex)
-                })
-            });
+  // Style loader by method
+  loaderRing.className = 'loader-ring' + (mode === 'causal' ? ' causal' : mode === 'layerwise' ? ' layerwise' : '');
 
-            const data = await response.json();
+  document.getElementById('loadingTitle').textContent =
+    mode === 'causal'    ? 'Running Causal SHAP — this takes ~2 min…' :
+    mode === 'layerwise' ? 'Running Layer-wise SHAP analysis…' :
+                           'Running Classical SHAP analysis…';
 
-            if (data.status === 'error') {
-                showError(data.message + " " + data.errors.join(", "));
-            } else {
-                renderResults(data);
-            }
-        } catch (e) {
-            showError("Network error or server down. Check console.");
-        } finally {
-            btnClassical.disabled = false;
-            btnCausal.disabled = false;
-            spinner.style.display = 'none';
-        }
+  document.getElementById('loadingSub').textContent =
+    mode === 'causal' ? 'Computing coalition weights per-sample against the causal DAG' :
+    mode === 'layerwise' ? 'Walking decision paths across the tree ensemble' :
+                           'TreeExplainer with interventional sampling';
+
+  document.getElementById('errorBanner').style.display = 'none';
+  document.getElementById('resultsSection').classList.remove('show');
+
+  // Animate steps
+  let stepIdx = 0;
+  const chips = ['stepChip1','stepChip2','stepChip3','stepChip4'];
+  chips.forEach(id => document.getElementById(id).classList.remove('active'));
+  chips[0] && document.getElementById(chips[0]).classList.add('active');
+  const stepTimer = setInterval(() => {
+    if (stepIdx < chips.length - 1) {
+      document.getElementById(chips[stepIdx]).classList.remove('active');
+      stepIdx++;
+      document.getElementById(chips[stepIdx]).classList.add('active');
     }
+  }, mode === 'causal' ? 30000 : 4000);
 
-    function renderResults(data) {
-        document.getElementById('resultsGrid').style.display = 'grid';
-        
-        // Mode specific rendering
-        if (data.method === 'causal_shap') {
-            document.querySelector('.title-group p').innerHTML = '<span style="color: var(--accent-green); font-weight: bold;">Method 3 — Causal SHAP</span>';
-            document.getElementById('causalHeatmapCard').style.display = 'block';
-            document.getElementById('causalHeatmap').src = "data:image/png;base64," + data.plots.causal_weights_heatmap;
-        } else {
-            document.querySelector('.title-group p').innerHTML = 'Mode: Classical SHAP';
-            document.getElementById('causalHeatmapCard').style.display = 'none';
-        }
+  const endpoints = {
+    classical: '/api/run-analysis',
+    causal:    '/api/run-causal-analysis',
+    layerwise: '/api/run-layerwise-analysis'
+  };
 
-        // Render Images
-        document.getElementById('summaryBar').src = "data:image/png;base64," + data.plots.summary_bar;
-        document.getElementById('shapVsWeights').src = "data:image/png;base64," + data.plots.shap_vs_weights;
-        document.getElementById('beeswarmPlot').src = "data:image/png;base64," + data.plots.beeswarm;
-        document.getElementById('waterfallPlot').src = "data:image/png;base64," + data.plots.waterfall;
-        document.getElementById('predictionDist').src = "data:image/png;base64," + data.plots.prediction_distribution;
+  try {
+    const resp = await fetch(endpoints[mode], {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        n_profiles: parseInt(document.getElementById('nProfiles').value),
+        use_synthetic: document.getElementById('useSynthetic').checked,
+        sample_index_for_waterfall: parseInt(document.getElementById('sampleIndex').value)
+      })
+    });
+    const data = await resp.json();
 
-        // Render Table
-        const tbody = document.querySelector('#attributionTable tbody');
-        tbody.innerHTML = "";
-        
-        let mutableList = metadata ? metadata.mutable_indices.map(i => metadata.feature_names[i]) : [];
-        let immutableList = metadata ? metadata.immutable_indices.map(i => metadata.feature_names[i]) : [];
-
-        data.shap_results.attribution_table.forEach(row => {
-            const tr = document.createElement('tr');
-            
-            let featureClass = "";
-            let featureStyle = "";
-            
-            if (mutableList.includes(row.feature)) featureClass = "mutable";
-            if (immutableList.includes(row.feature)) featureClass = "immutable";
-            
-            if (data.method === 'causal_shap') {
-                if (row.is_protected) {
-                    featureStyle = "color: var(--accent-red); font-weight: bold;";
-                } else if (row.is_proxy_candidate) {
-                    featureStyle = "color: #F59E0B; font-weight: bold;";
-                }
-            }
-
-            tr.innerHTML = `
-                <td>${row.rank}</td>
-                <td class="${featureClass}" style="${featureStyle}">${row.feature}</td>
-                <td>${row.mean_abs_shap.toFixed(4)} (${row.pct.toFixed(1)}%)</td>
-                <td style="color: ${row.direction==='positive' ? 'var(--accent-green)' : 'var(--accent-red)'}">
-                    ${row.direction === 'positive' ? '↑ Positive' : '↓ Negative'}
-                </td>
-            `;
-            tbody.appendChild(tr);
-        });
+    if (data.status === 'error') {
+      showError(data.message + '\n' + (data.errors || []).join('\n'));
+    } else {
+      renderResults(data, mode);
     }
+  } catch(e) {
+    showError('Network error — is Flask running on port 5000?\n' + e.message);
+  } finally {
+    clearInterval(stepTimer);
+    overlay.classList.remove('show');
+    btns.forEach(b => b.disabled = false);
+  }
+}
 
-    function showError(msg) {
-        const errorBanner = document.getElementById('errorBanner');
-        errorBanner.innerText = msg;
-        errorBanner.style.display = 'block';
-    }
+/* ═══════════════════════════════════════════════
+   RENDER RESULTS
+═══════════════════════════════════════════════ */
+function renderResults(data, mode) {
+  activeMethod = mode;
+  const p = data.plots;
+  const sr = data.shap_results;
 
-    // Modal logic
-    const modal = document.getElementById("imageModal");
-    const modalImg = document.getElementById("modalImg");
-    
-    function openModal(src) {
-        modal.style.display = "block";
-        modalImg.src = src;
+  // Meta chips
+  document.getElementById('metaProfiles').textContent = data.profiles_generated + ' profiles';
+  document.getElementById('metaAuc').textContent = 'AUC ' + (data.model_info?.auc || '—');
+  document.getElementById('metaTime').textContent = sr.computation_time_seconds + 's';
+  document.getElementById('metaBase').textContent = 'base_value ' + sr.base_value.toFixed(4);
+  document.getElementById('waterfallSampleBadge').textContent = 'sample ' + document.getElementById('sampleIndex').value;
+
+  // Method badge
+  const badge = document.getElementById('methodBadge');
+  if (mode === 'causal') {
+    badge.className = 'results-method-badge badge-m3';
+    badge.textContent = '🔗 Output 3 — Causal Coalition SHAP';
+  } else if (mode === 'layerwise') {
+    badge.className = 'results-method-badge badge-m4';
+    badge.textContent = '🔬 Output 4 — Layer-wise Local SHAP';
+  } else {
+    badge.className = 'results-method-badge badge-m2';
+    badge.textContent = '⚡ Output 2 — Classical SHAP';
+  }
+
+  // Plots — always shown
+  setImg('summaryBar',    p.summary_bar);
+  setImg('predictionDist',p.prediction_distribution);
+  setImg('shapVsWeights', p.shap_vs_weights);
+  setImg('beeswarmPlot',  p.beeswarm);
+  setImg('waterfallPlot', p.waterfall);
+
+  // Attribution table
+  renderTable(sr.attribution_table, mode);
+
+  // Method-specific sections
+  document.getElementById('causalSection').style.display    = 'none';
+  document.getElementById('layerwiseSection').style.display = 'none';
+  document.getElementById('classicalSection').style.display = 'none';
+
+  if (mode === 'causal') {
+    renderCausalSection(data, p);
+  } else if (mode === 'layerwise') {
+    renderLayerwiseSection(data, p);
+  } else {
+    document.getElementById('classicalSection').style.display = 'block';
+  }
+
+  // Show results
+  document.getElementById('resultsSection').classList.add('show');
+  switchTab('overview');
+
+  // Scroll to results
+  document.getElementById('resultsSection').scrollIntoView({ behavior: 'smooth' });
+}
+
+function setImg(id, b64) {
+  if (b64) document.getElementById(id).src = 'data:image/png;base64,' + b64;
+}
+
+/* ═══════════════════════════════════════════════
+   ATTRIBUTION TABLE
+═══════════════════════════════════════════════ */
+function renderTable(rows, mode) {
+  const tbody = document.getElementById('attrTbody');
+  tbody.innerHTML = '';
+
+  const mutableList   = metadata ? metadata.mutable_indices.map(i => metadata.feature_names[i]) : [];
+  const immutableList = metadata ? metadata.immutable_indices.map(i => metadata.feature_names[i]) : [];
+
+  const maxShap = rows.length ? Math.max(...rows.map(r => r.mean_abs_shap)) : 1;
+
+  // Legend visibility
+  document.getElementById('legendProxy').style.display     = mode === 'causal' ? '' : 'none';
+  document.getElementById('legendProtected').style.display = mode === 'causal' ? '' : 'none';
+
+  rows.forEach(row => {
+    const tr = document.createElement('tr');
+
+    let featClass = 'feat-cell';
+    if (mutableList.includes(row.feature))   featClass += ' feat-mutable';
+    if (immutableList.includes(row.feature)) featClass += ' feat-immutable';
+    if (mode === 'causal' && row.is_protected)       featClass = 'feat-cell feat-protected';
+    if (mode === 'causal' && row.is_proxy_candidate) featClass = 'feat-cell feat-proxy';
+
+    const tags = [];
+    if (mode === 'causal') {
+      if (row.is_protected)       tags.push('<span class="tag tag-protected">protected</span>');
+      if (row.is_proxy_candidate) tags.push('<span class="tag tag-proxy">proxy</span>');
     }
-    
-    function closeModal() {
-        modal.style.display = "none";
+    if (mutableList.includes(row.feature))   tags.push('<span class="tag" style="border-color:#60A5FA;color:#60A5FA">mutable</span>');
+    if (immutableList.includes(row.feature)) tags.push('<span class="tag" style="border-color:#F87171;color:#F87171">immutable</span>');
+
+    const barW = Math.round(row.pct);
+    tr.innerHTML = `
+      <td class="rank-cell">${row.rank}</td>
+      <td class="${featClass}">${row.feature}</td>
+      <td class="shap-cell">${row.mean_abs_shap.toFixed(4)}</td>
+      <td class="bar-cell">
+        <div style="font-size:11px;color:var(--sub)">${row.pct.toFixed(1)}%</div>
+        <div class="pct-bar" style="width:${Math.min(barW*2,100)}%;background:${activeMethod==='causal'?'var(--m3)':activeMethod==='layerwise'?'var(--m4)':'var(--m2)'}"></div>
+      </td>
+      <td class="${row.direction==='positive'?'dir-pos':'dir-neg'}">${row.direction==='positive'?'▲ Positive':'▼ Negative'}</td>
+      <td>${tags.join('')}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+/* ═══════════════════════════════════════════════
+   CAUSAL SECTION
+═══════════════════════════════════════════════ */
+function renderCausalSection(data, p) {
+  document.getElementById('causalSection').style.display = 'block';
+  const gi = data.causal_graph_info || {};
+
+  document.getElementById('causalInfoGrid').innerHTML = `
+    <div class="info-block"><div class="info-label">Causal Edges</div><div class="info-val green">${gi.n_edges || '—'}</div></div>
+    <div class="info-block"><div class="info-label">Protected Attrs</div><div class="info-val amber">${(gi.protected_attributes||[]).length}</div></div>
+    <div class="info-block"><div class="info-label">Proxy Candidates</div><div class="info-val amber">${(gi.proxy_candidates||[]).length}</div></div>
+    <div class="info-block"><div class="info-label">Samples (SHAP)</div><div class="info-val blue">${data.shap_results?.n_profiles_analysed || '—'}</div></div>
+  `;
+
+  document.getElementById('protectedList').innerHTML =
+    (gi.protected_attributes||[]).map(a =>
+      `<span class="tag-item" style="border-color:var(--red);color:var(--red)">${a}</span>`
+    ).join('');
+
+  document.getElementById('proxyList').innerHTML =
+    (gi.proxy_candidates||[]).map(a =>
+      `<span class="tag-item" style="border-color:var(--m4);color:var(--m4)">${a}</span>`
+    ).join('');
+
+  if (p.causal_weights_heatmap) setImg('causalHeatmap', p.causal_weights_heatmap);
+}
+
+/* ═══════════════════════════════════════════════
+   LAYERWISE SECTION
+═══════════════════════════════════════════════ */
+function renderLayerwiseSection(data, p) {
+  document.getElementById('layerwiseSection').style.display = 'block';
+  const li = data.layerwise_info || {};
+
+  document.getElementById('layerwiseInfoGrid').innerHTML = `
+    <div class="info-block"><div class="info-label">Max Tree Depth</div><div class="info-val amber">${li.max_depth ?? '—'}</div></div>
+    <div class="info-block"><div class="info-label">Samples (Layerwise)</div><div class="info-val blue">${li.n_samples_computed_layerwise ?? '—'}</div></div>
+    <div class="info-block"><div class="info-label">Depth Levels</div><div class="info-val green">${li.max_depth != null ? li.max_depth + 1 : '—'}</div></div>
+    <div class="info-block"><div class="info-label">Method ID</div><div class="info-val" style="color:var(--sub)">4</div></div>
+  `;
+
+  const depthLegend = document.getElementById('depthLegend');
+  depthLegend.innerHTML = '';
+  if (li.max_depth != null) {
+    for (let d = 0; d <= li.max_depth; d++) {
+      const chip = document.createElement('div');
+      chip.className = 'depth-chip';
+      chip.textContent = 'depth_' + d + (d === 0 ? '  ← coarse' : d === li.max_depth ? '  ← fine' : '');
+      depthLegend.appendChild(chip);
     }
-    
-    // Close modal on outside click
-    window.onclick = function(event) {
-        if (event.target == modal) {
-            modal.style.display = "none";
-        }
-    }
+  }
+
+  if (p.layerwise_depth_heatmap) setImg('layerwiseHeatmap', p.layerwise_depth_heatmap);
+}
+
+/* ═══════════════════════════════════════════════
+   ERROR
+═══════════════════════════════════════════════ */
+function showError(msg) {
+  const b = document.getElementById('errorBanner');
+  b.textContent = msg;
+  b.style.display = 'block';
+  b.scrollIntoView({ behavior: 'smooth' });
+}
+
+/* ═══════════════════════════════════════════════
+   MODAL
+═══════════════════════════════════════════════ */
+function openModal(src) {
+  document.getElementById('modalImg').src = src;
+  document.getElementById('imgModal').classList.add('show');
+}
+function closeModal() {
+  document.getElementById('imgModal').classList.remove('show');
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 </script>
-
 </body>
 </html>

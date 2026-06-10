@@ -9,6 +9,7 @@ import yaml
 from profile_generator.generator import ProfileGenerator
 from explainers.method2_classical_shap import ClassicalSHAPExplainer
 from explainers.method3_causal_shap import CausalSHAPExplainer
+from explainers.method4_layerwise_shap import LayerwiseSHAPExplainer
 from analysis.visualise import (
     plot_shap_summary,
     plot_shap_beeswarm,
@@ -16,7 +17,8 @@ from analysis.visualise import (
     plot_prediction_distribution,
     plot_shap_vs_weights,
     get_attribution_table,
-    plot_causal_weights_heatmap
+    plot_causal_weights_heatmap,
+    plot_layerwise_depth_heatmap
 )
 
 app = Flask(__name__)
@@ -267,6 +269,114 @@ def run_causal_analysis():
             "message": "An error occurred during causal SHAP analysis.",
             "errors": errors
         })
+
+@app.route('/api/run-layerwise-analysis', methods=['POST'])
+def run_layerwise_analysis():
+    """Output 4: Layer-wise Local SHAP analysis."""
+    errors = []
+    try:
+        req_data = request.json or {}
+        n_profiles = int(req_data.get('n_profiles', 100))
+        use_synthetic = bool(req_data.get('use_synthetic', False))
+        sample_index = int(req_data.get('sample_index_for_waterfall', 0))
+
+        start_time = time.time()
+
+        # Load model
+        model_path = os.path.join(MODELS_DIR, "model.pkl")
+        if not os.path.exists(model_path):
+            raise FileNotFoundError("Model not found. Run setup first.")
+        model = joblib.load(model_path)
+
+        # Generator
+        config_path = os.path.join(CONFIG_DIR, "hyperparameters.yaml")
+        metadata_path = os.path.join(DATA_DIR, "processed", "metadata.json")
+        generator = ProfileGenerator(config_path, metadata_path, DATA_DIR)
+
+        # Generate profiles
+        profiles = generator.generate(n_profiles=n_profiles, use_synthetic=use_synthetic)
+        assert profiles.shape[1] == generator.n_features
+
+        # Config
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+
+        # Background data
+        background_samples = config['shap'].get('background_samples', 100)
+        X_train = pd.read_parquet(os.path.join(DATA_DIR, "processed", "X_train.parquet"))
+        background_data = X_train.sample(
+            n=min(background_samples, len(X_train)), random_state=42
+        )
+
+        model_info_path = os.path.join(MODELS_DIR, "model_info.json")
+
+        # Layer-wise SHAP explainer (Output 4)
+        explainer = LayerwiseSHAPExplainer(
+            model, background_data, generator.feature_names,
+            config, model_info_path=model_info_path
+        )
+
+        # Run
+        shap_result = explainer.explain(profiles)
+
+        # Plots
+        summary_bar = plot_shap_summary(shap_result)
+        beeswarm = plot_shap_beeswarm(shap_result)
+
+        if sample_index >= len(shap_result['shap_values']):
+            sample_index = 0
+
+        waterfall = plot_waterfall_single(shap_result, sample_index)
+        pred_dist = plot_prediction_distribution(model, profiles, shap_result)
+        shap_vs_weights = plot_shap_vs_weights(shap_result)
+        layerwise_heatmap = plot_layerwise_depth_heatmap(shap_result)
+
+        attribution_table = explainer.get_summary(shap_result)
+        computation_time = time.time() - start_time
+        model_info = get_model_info()
+
+        return jsonify({
+            "status": "success",
+            "method": "layerwise_shap",
+            "model_info": {
+                "auc": model_info.get("auc_test"),
+                "accuracy": model_info.get("accuracy_test"),
+                "n_features": model_info.get("n_features"),
+                "feature_names": model_info.get("feature_names")
+            },
+            "profiles_generated": len(profiles),
+            "layerwise_info": {
+                "max_depth": shap_result.get("max_depth"),
+                "n_samples_computed_layerwise": shap_result.get("n_samples_computed_layerwise")
+            },
+            "shap_results": {
+                "attribution_table": attribution_table,
+                "n_profiles_analysed": len(profiles),
+                "base_value": shap_result["base_value"],
+                "computation_time_seconds": round(computation_time, 2)
+            },
+            "layerwise_mean_abs": shap_result.get("layerwise_mean_abs", {}),
+            "plots": {
+                "summary_bar": summary_bar,
+                "beeswarm": beeswarm,
+                "waterfall": waterfall,
+                "prediction_distribution": pred_dist,
+                "shap_vs_weights": shap_vs_weights,
+                "layerwise_depth_heatmap": layerwise_heatmap
+            },
+            "errors": errors
+        })
+
+    except Exception as e:
+        import traceback
+        errors.append(str(e))
+        errors.append(traceback.format_exc())
+        return jsonify({
+            "status": "error",
+            "message": "An error occurred during layer-wise SHAP analysis.",
+            "errors": errors
+        })
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)

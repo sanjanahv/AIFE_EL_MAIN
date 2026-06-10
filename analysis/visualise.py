@@ -41,11 +41,17 @@ def fig_to_base64(fig) -> str:
 
 def plot_shap_summary(shap_result: dict, max_features=15) -> str:
     method = shap_result.get('method', 'classical_shap')
-    method_id = 2 if method == 'classical_shap' else 3
+    method_id_map = {
+        'classical_shap': 2,
+        'causal_shap': 3,
+        'layerwise_shap': 4,
+    }
+    method_id = method_id_map.get(method, 2)
 
     titles = {
         'classical_shap': 'Classical SHAP — Feature Attribution Summary',
-        'causal_shap': 'Causal SHAP (Fix 1) — Feature Attribution Summary'
+        'causal_shap': 'Causal SHAP (Fix 1) — Feature Attribution Summary',
+        'layerwise_shap': 'Layer-wise SHAP (Fix 2) — Feature Attribution Summary',
     }
     title = titles.get(method, 'SHAP Feature Attribution Summary')
     color = METHOD_COLORS.get(method_id, METHOD_COLORS[2])
@@ -214,5 +220,59 @@ def plot_causal_weights_heatmap(causal_graph, feature_names: list) -> str:
     ax.set_title('Causal Plausibility Matrix\n(row=feature i, col=coalition member j)')
     ax.set_xlabel('Coalition Member j')
     ax.set_ylabel('Target Feature i')
+
+    return fig_to_base64(fig)
+
+
+def plot_layerwise_depth_heatmap(shap_result: dict, max_features: int = 15) -> str:
+    """
+    Heatmap of mean |layerwise contribution| per feature per depth level.
+    Rows = features (sorted by total mean |SHAP|), Columns = depth_0 … depth_N.
+    Colour = F59E0B (amber) palette to match Method 4 colour.
+    """
+    layerwise_mean_abs = shap_result.get('layerwise_mean_abs', {})
+    feature_names = shap_result.get('feature_names', [])
+
+    if not layerwise_mean_abs or not feature_names:
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.text(0.5, 0.5, 'No layer-wise data available', ha='center', va='center')
+        return fig_to_base64(fig)
+
+    depth_keys = sorted(layerwise_mean_abs.keys(),
+                        key=lambda k: int(k.split('_')[1]))
+    n_features = len(feature_names)
+
+    # Build matrix: rows=features, cols=depths
+    matrix = np.zeros((n_features, len(depth_keys)))
+    for col_idx, dk in enumerate(depth_keys):
+        vals = layerwise_mean_abs[dk]
+        for row_idx in range(n_features):
+            matrix[row_idx, col_idx] = vals[row_idx] if row_idx < len(vals) else 0.0
+
+    # Sort rows by total importance across all depths
+    row_totals = matrix.sum(axis=1)
+    sort_idx = np.argsort(row_totals)[::-1][:max_features]
+    matrix = matrix[sort_idx, :]
+    sorted_features = [feature_names[i] for i in sort_idx]
+
+    col_labels = [dk.replace('_', ' ').title() for dk in depth_keys]
+
+    fig, ax = plt.subplots(figsize=(max(8, len(depth_keys) * 1.2), max(6, len(sort_idx) * 0.55)))
+    sns.heatmap(
+        matrix,
+        xticklabels=col_labels,
+        yticklabels=sorted_features,
+        annot=True,
+        fmt='.3f',
+        cmap='YlOrBr',
+        ax=ax,
+        linewidths=0.4,
+        linecolor='#E5E7EB'
+    )
+    ax.set_title('Layer-wise SHAP — Mean |Contribution| by Feature & Tree Depth\n'
+                 '(rows = features sorted by total importance, cols = split depth)')
+    ax.set_xlabel('Tree Split Depth Level')
+    ax.set_ylabel('Feature')
+    ax.tick_params(axis='x', rotation=0)
 
     return fig_to_base64(fig)
