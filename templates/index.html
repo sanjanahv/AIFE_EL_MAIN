@@ -794,6 +794,21 @@
       <!-- Layerwise section (hidden unless method=layerwise) -->
       <div id="layerwiseSection" style="display:none">
         <div class="info-grid" id="layerwiseInfoGrid"></div>
+
+        <!-- Jacobian chain card (Step 2 of formula) -->
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header">
+            <div class="card-title">Step 2 — Jacobian Upward Propagation</div>
+            <div class="card-badge">∂Fₖ/∂Fₖ₋₁ chain product</div>
+          </div>
+          <p style="font-size:12px;color:var(--sub);margin-bottom:12px;line-height:1.7">
+            From <strong>SHAP_Annotated_Formulas.pdf</strong>: φᵢ<sup>global</sup> = Σₗ φᵢˡ · Πₖ(∂Fₖ/∂Fₖ₋₁)<br>
+            Each J[l] below is the chain-product of OLS slopes from stage <em>l</em> to the final output —
+            how much a unit change at that stage propagates forward through all later boosting rounds.
+          </p>
+          <div id="jacobianChainGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;"></div>
+        </div>
+
         <div class="card" style="margin-bottom:16px">
           <div class="card-header">
             <div class="card-title">Depth Levels Computed</div>
@@ -801,8 +816,8 @@
           </div>
           <div class="depth-legend" id="depthLegend"></div>
           <p style="font-size:12px;color:var(--sub);margin-top:8px">
-            <strong>depth_0</strong> = first split in each tree (coarse, most impactful decision).<br>
-            Deeper levels = fine-grained, interaction-driven refinements. Sum across all depths ≈ standard SHAP value.
+            <strong>depth_0</strong> = first stage (coarse, most impactful). <strong>depth_5</strong> = last stage (fine refinements).<br>
+            Final attribution = Σ stage_SHAP × J[stage] — not a simple sum, but Jacobian-weighted propagation.
           </p>
         </div>
         <div class="card">
@@ -1126,21 +1141,40 @@ function renderCausalSection(data, p) {
 function renderLayerwiseSection(data, p) {
   document.getElementById('layerwiseSection').style.display = 'block';
   const li = data.layerwise_info || {};
+  const jChain = data.jacobian_chain || [];
 
   document.getElementById('layerwiseInfoGrid').innerHTML = `
-    <div class="info-block"><div class="info-label">Max Tree Depth</div><div class="info-val amber">${li.max_depth ?? '—'}</div></div>
+    <div class="info-block"><div class="info-label">Boosting Stages</div><div class="info-val amber">${li.max_depth != null ? li.max_depth + 1 : '—'}</div></div>
     <div class="info-block"><div class="info-label">Samples (Layerwise)</div><div class="info-val blue">${li.n_samples_computed_layerwise ?? '—'}</div></div>
-    <div class="info-block"><div class="info-label">Depth Levels</div><div class="info-val green">${li.max_depth != null ? li.max_depth + 1 : '—'}</div></div>
-    <div class="info-block"><div class="info-label">Method ID</div><div class="info-val" style="color:var(--sub)">4</div></div>
+    <div class="info-block"><div class="info-label">J[0] (coarse→final)</div><div class="info-val green">${jChain.length ? jChain[0].toFixed(4) : '—'}</div></div>
+    <div class="info-block"><div class="info-label">J[5] (fine stage)</div><div class="info-val" style="color:var(--sub)">${jChain.length >= 6 ? jChain[5].toFixed(4) : '—'}</div></div>
   `;
 
+  // Render Jacobian chain grid (Step 2 of formula)
+  const jGrid = document.getElementById('jacobianChainGrid');
+  jGrid.innerHTML = '';
+  jChain.forEach((j, d) => {
+    const block = document.createElement('div');
+    block.className = 'info-block';
+    // Colour: higher J = more amber (high propagation), lower = blue (attenuated)
+    const col = d === 0 ? 'var(--m4)' : d === jChain.length - 1 ? 'var(--sub)' : 'var(--m2)';
+    block.innerHTML = `
+      <div class="info-label">J[${d}] depth_${d}</div>
+      <div class="info-val" style="color:${col};font-size:15px">${j.toFixed(4)}</div>
+      <div style="font-size:10px;color:var(--muted);margin-top:2px">${d === 0 ? 'coarse → final' : d === jChain.length-1 ? 'final stage' : 'propagated'}</div>
+    `;
+    jGrid.appendChild(block);
+  });
+
+  // Depth stage chips
   const depthLegend = document.getElementById('depthLegend');
   depthLegend.innerHTML = '';
   if (li.max_depth != null) {
     for (let d = 0; d <= li.max_depth; d++) {
       const chip = document.createElement('div');
       chip.className = 'depth-chip';
-      chip.textContent = 'depth_' + d + (d === 0 ? '  ← coarse' : d === li.max_depth ? '  ← fine' : '');
+      const j = jChain[d] !== undefined ? ` · J=${jChain[d].toFixed(3)}` : '';
+      chip.textContent = `depth_${d}${j}${d === 0 ? ' ← coarse' : d === li.max_depth ? ' ← fine' : ''}`;
       depthLegend.appendChild(chip);
     }
   }

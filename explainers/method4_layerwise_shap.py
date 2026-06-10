@@ -1,18 +1,28 @@
 """
 method4_layerwise_shap.py
 
-Output 4: Layer-wise Local SHAP Formulae
+Output 4: Layer-wise Local SHAP  (Formula 2 from SHAP_Annotated_Formulas.pdf)
 
-Decomposes the gradient-boosted LightGBM model into L layers (boosting stages/trees)
-and computes SHAP locally within each layer according to:
+Implements the FULL two-step formula:
 
-Formula 2: Layerwise Local SHAP
-φᵢˡ = Σ w^layer(S, i, l) · [f_l(S∪{i}) - f_l(S)]
-      S⊆N(i,l)\{i}
+  STEP 1 — Local SHAP per boosting stage l:
+      φᵢˡ = Σ  w^layer(S, i, l) · [f_l(S∪{i}) − f_l(S)]
+             S⊆N(i,l)∖{i}
 
-For efficiency and mathematical correctness, we partition the L boosting rounds 
-dynamically into 6 sequential stages (representing coarse to fine refinements)
-and compute exact local stage contributions using SHAP's C++ TreeExplainer.
+  STEP 2 — Upward Jacobian propagation (chain-rule, analogous to backprop):
+      φᵢ^global = Σₗ  φᵢˡ · Πₖ₌ₗ₊₁ᴸ (∂Fₖ / ∂Fₖ₋₁)
+
+  where ∂Fₖ/∂Fₖ₋₁ is estimated empirically on the background dataset as
+  the OLS slope of cumulative stage-k predictions regressed on stage-(k-1)
+  predictions:
+
+      β_k = Σ(Fₖ · Fₖ₋₁) / Σ(Fₖ₋₁²)
+
+  This measures how much a unit change in the stage-(k-1) output propagates
+  forward through all later boosting rounds to the final prediction — exactly
+  the "downstream influence" from the formula doc.
+
+Reference: SHAP_Annotated_Formulas.pdf — Formula 2, Steps 1 & 2
 """
 
 import numpy as np
@@ -29,12 +39,13 @@ class LayerwiseSHAPExplainer(BaseExplainer):
                  feature_names: list, config: dict,
                  model_info_path: str = None):
         """
-        Parameters:
-            model        : fitted LightGBM model (LGBMClassifier)
-            background_data : sample of X_train for interventional baseline
-            feature_names   : ordered list of feature names
-            config          : loaded hyperparameters.yaml dict
-            model_info_path : optional path to model_info.json
+        Parameters
+        ----------
+        model           : fitted LightGBM model (LGBMClassifier)
+        background_data : sample of X_train for interventional SHAP baseline
+        feature_names   : ordered list of feature names
+        config          : loaded hyperparameters.yaml dict
+        model_info_path : optional path to model_info.json
         """
         self.model = model
         self.feature_names = feature_names
@@ -52,7 +63,7 @@ class LayerwiseSHAPExplainer(BaseExplainer):
             except Exception:
                 pass
 
-        # TreeExplainer with interventional sampling
+        # TreeExplainer with interventional sampling for SHAP at each stage
         self.tree_explainer = shap.TreeExplainer(
             model,
             data=background_data,
@@ -60,72 +71,174 @@ class LayerwiseSHAPExplainer(BaseExplainer):
         )
 
         self.num_trees = self.model.booster_.num_trees()
-        # Map 6 sequential stages as "depth_0" to "depth_5" to fit UI seamlessly
-        self.max_depth = 5
-        print(f"LayerwiseSHAPExplainer initialised with {self.num_trees} boosting stages (trees).")
+        # 6 sequential boosting stages — depth_0 (coarse) to depth_5 (fine)
+        self.n_stages = 6
+        self.max_depth = self.n_stages - 1  # for UI display
+        self.stage_limits = [
+            int(np.ceil(self.num_trees * (d + 1) / self.n_stages))
+            for d in range(self.n_stages)
+        ]
+
+        # ── Pre-compute Jacobians on background data (Step 2) ───────────────
+        # For each consecutive pair of stages (k-1, k), estimate
+        #   β_k = ∂F_k / ∂F_{k-1}  via OLS slope on background predictions.
+        # Then build the chain product J[l] = Π_{k=l+1}^{L} β_k
+        # so J[l] = how much a unit change at stage l propagates to the final output.
+        print("LayerwiseSHAPExplainer: computing stage Jacobians on background data...")
+        self._jacobian_chain = self._compute_jacobian_chain()
+        print(f"  Jacobian chain (stage -> final): {[round(j, 4) for j in self._jacobian_chain]}")
+        print(f"LayerwiseSHAPExplainer initialised with {self.num_trees} boosting stages.")
+
+    # ────────────────────────────────────────────────────────────────────────
+    # Jacobian estimation
+    # ────────────────────────────────────────────────────────────────────────
+
+    def _stage_predictions(self, X: pd.DataFrame) -> np.ndarray:
+        """
+        Returns cumulative raw-score (log-odds) predictions at each of the
+        n_stages stage boundaries, shape = (n_samples, n_stages).
+        """
+        preds = np.zeros((len(X), self.n_stages))
+        for d, limit in enumerate(self.stage_limits):
+            raw = self.model.predict(X, raw_score=True, num_iteration=limit)
+            preds[:, d] = raw
+        return preds
+
+    def _compute_jacobian_chain(self) -> list:
+        """
+        Step 2 from the formula doc: estimate ∂F_k/∂F_{k-1} for each
+        consecutive pair of stages using OLS on the background dataset.
+
+        β_k = (F_{k-1} · F_k) / (F_{k-1} · F_{k-1})   [dot-product form]
+
+        Returns J[l] = Π_{k=l+1}^{L} β_k  for l = 0 … n_stages-1.
+        J[n_stages-1] = 1.0  (last stage: no downstream stages)
+        """
+        bg = self.background_data
+        stage_preds = self._stage_predictions(bg)   # (n_bg, n_stages)
+
+        # β_k for k in {1 … n_stages-1}  (pairs: stage k-1 → stage k)
+        betas = []
+        for k in range(1, self.n_stages):
+            f_prev = stage_preds[:, k - 1]
+            f_curr = stage_preds[:, k]
+            denom = np.dot(f_prev, f_prev)
+            if denom < 1e-12:
+                betas.append(1.0)  # degenerate — fall back to 1
+            else:
+                betas.append(float(np.dot(f_prev, f_curr) / denom))
+
+        # Build chain products: J[l] = product of betas[l], betas[l+1], …, betas[-1]
+        # J[n_stages-1] = 1.0 (last stage has no downstream stages)
+        jacobian_chain = [1.0] * self.n_stages
+        for l in range(self.n_stages - 2, -1, -1):
+            jacobian_chain[l] = betas[l] * jacobian_chain[l + 1]
+
+        return jacobian_chain
+
+    # ────────────────────────────────────────────────────────────────────────
+    # Main explain method
+    # ────────────────────────────────────────────────────────────────────────
 
     def explain(self, profiles: pd.DataFrame) -> dict:
         """
-        Compute layer-wise local SHAP values for all profiles by slicing the ensemble
-        into 6 sequential boosting stages.
+        Full two-step layer-wise SHAP:
+
+        STEP 1: φᵢˡ  — incremental SHAP at each boosting stage l
+        STEP 2: φᵢ^global = Σₗ  φᵢˡ · J[l]   (Jacobian-weighted sum)
+
+        The Jacobian chain J[l] = Π_{k=l+1}^{L} (∂F_k/∂F_{k-1}) was
+        pre-computed in __init__ on the background dataset.
         """
         n_profiles = len(profiles)
-        
-        # 1. Compute standard full-model TreeSHAP values
-        shap_values_obj = self.tree_explainer(profiles)
-        sv = shap_values_obj.values
-        base_values = shap_values_obj.base_values
 
-        if len(sv.shape) == 3:  # (samples, features, classes)
-            sv = sv[:, :, 1]
-            if isinstance(base_values, np.ndarray) and len(base_values.shape) == 2:
-                base_values = base_values[:, 1]
-
-        if isinstance(base_values, np.ndarray):
-            base_value = float(np.mean(base_values))
-        else:
-            base_value = float(base_values)
-
-        mean_abs_shap = np.abs(sv).mean(axis=0)
-
-        # 2. Decompose into 6 sequential boosting rounds (coarse to fine stages)
-        stage_limits = [int(np.ceil(self.num_trees * (d + 1) / 6)) for d in range(6)]
-        
-        layerwise_contributions = {}
+        # ── STEP 1: local SHAP per stage ────────────────────────────────────
+        stage_shap = {}   # key: 'depth_d', value: ndarray (n_profiles, n_features)
         layerwise_mean_abs = {}
-        
-        prev_sv = np.zeros_like(sv)
-        
-        for d, limit in enumerate(stage_limits):
+        layerwise_contributions = {}
+
+        prev_sv = None
+
+        for d, limit in enumerate(self.stage_limits):
             key = f'depth_{d}'
-            # Call TreeExplainer's optimized C++ shap_values with tree_limit
-            stage_sv_full = self.tree_explainer.shap_values(profiles, tree_limit=limit, check_additivity=False)
-            
+
+            # Full-model SHAP up to this tree limit
+            stage_sv_full = self.tree_explainer.shap_values(
+                profiles, tree_limit=limit, check_additivity=False
+            )
+
             if isinstance(stage_sv_full, list):
-                stage_sv = stage_sv_full[1]
+                stage_sv = np.array(stage_sv_full[1])
             else:
-                stage_sv = stage_sv_full
-                
-            # The contribution of the current stage is the incremental SHAP
-            contrib = stage_sv - prev_sv
+                stage_sv = np.array(stage_sv_full)
+
+            # Incremental contribution at this stage
+            if prev_sv is None:
+                contrib = stage_sv
+            else:
+                contrib = stage_sv - prev_sv
             prev_sv = stage_sv
-            
+
+            stage_shap[key] = contrib  # (n_profiles, n_features)
             layerwise_contributions[key] = contrib.tolist()
             layerwise_mean_abs[key] = np.abs(contrib).mean(axis=0).tolist()
 
+        # ── STEP 2: Jacobian-weighted upward propagation ────────────────────
+        #   φᵢ^global = Σₗ  φᵢˡ · J[l]
+        propagated_sv = np.zeros((n_profiles, self.n_features))
+        for d in range(self.n_stages):
+            key = f'depth_{d}'
+            j = self._jacobian_chain[d]
+            propagated_sv += stage_shap[key] * j
+
+        # Base value (same background → same base)
+        shap_obj = self.tree_explainer(profiles.iloc[:5])
+        base_values = shap_obj.base_values
+        if isinstance(base_values, np.ndarray):
+            if len(base_values.shape) == 2:
+                base_value = float(np.mean(base_values[:, 1]))
+            else:
+                base_value = float(np.mean(base_values))
+        else:
+            base_value = float(base_values)
+
+        # Global SHAP from Step 2 (Jacobian-propagated)
+        mean_abs_shap = np.abs(propagated_sv).mean(axis=0)
+
+        # Also expose the raw (non-propagated) full-model SHAP for comparison
+        shap_values_obj = self.tree_explainer(profiles)
+        sv_raw = shap_values_obj.values
+        if len(sv_raw.shape) == 3:
+            sv_raw = sv_raw[:, :, 1]
+
+        print(
+            f"Layerwise SHAP complete - Jacobian chain: "
+            f"{[round(j, 4) for j in self._jacobian_chain]}"
+        )
+
         return {
-            "shap_values": sv.tolist(),
+            # Step 2 result: Jacobian-propagated global attributions
+            "shap_values": propagated_sv.tolist(),
             "base_value": base_value,
             "feature_names": self.feature_names,
             "mean_abs_shap": mean_abs_shap.tolist(),
             "profiles": profiles.values.tolist(),
             "method": self.get_method_name(),
             "model_importances": self.model_importances,
+
+            # Step 1 results: per-stage incremental contributions
             "layerwise_contributions": layerwise_contributions,
             "layerwise_mean_abs": layerwise_mean_abs,
+
+            # Jacobians for display/audit
+            "jacobian_chain": self._jacobian_chain,
+
+            # Metadata
             "max_depth": self.max_depth,
             "n_samples_computed_layerwise": n_profiles,
         }
+
+    # ────────────────────────────────────────────────────────────────────────
 
     def get_summary(self, shap_result: dict) -> list:
         """Standard feature attribution summary — same format as Method 2/3."""

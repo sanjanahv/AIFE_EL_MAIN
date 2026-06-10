@@ -356,6 +356,7 @@ def run_layerwise_analysis():
                 "computation_time_seconds": round(computation_time, 2)
             },
             "layerwise_mean_abs": shap_result.get("layerwise_mean_abs", {}),
+            "jacobian_chain": shap_result.get("jacobian_chain", []),
             "plots": {
                 "summary_bar": summary_bar,
                 "beeswarm": beeswarm,
