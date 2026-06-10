@@ -3,21 +3,16 @@ method4_layerwise_shap.py
 
 Output 4: Layer-wise Local SHAP Formulae
 
-For LightGBM (ensemble of decision trees), "layer-wise" means computing
-SHAP attributions grouped by tree split depth across the ensemble.
+Decomposes the gradient-boosted LightGBM model into L layers (boosting stages/trees)
+and computes SHAP locally within each layer according to:
 
-For each sample x and each feature i:
-    φᵢ_local(d) = contribution of feature i from all splits at depth d
+Formula 2: Layerwise Local SHAP
+φᵢˡ = Σ w^layer(S, i, l) · [f_l(S∪{i}) - f_l(S)]
+      S⊆N(i,l)\{i}
 
-This gives a richer picture than global SHAP:
-- depth_0 tells you which features dominate at the first split (coarse rules)
-- deeper levels show refined, interaction-driven contributions
-- summing across all depths gives the standard SHAP value
-
-This is LOCAL because attributions are computed per-sample, not averaged.
-
-Method inspiration: Brain layer-wise processing — early layers detect broad
-patterns, later layers refine fine-grained distinctions.
+For efficiency and mathematical correctness, we partition the L boosting rounds 
+dynamically into 6 sequential stages (representing coarse to fine refinements)
+and compute exact local stage contributions using SHAP's C++ TreeExplainer.
 """
 
 import numpy as np
@@ -50,182 +45,33 @@ class LayerwiseSHAPExplainer(BaseExplainer):
         # Load model gain importances for comparison plot
         self.model_importances = None
         if model_info_path and os.path.exists(model_info_path):
-            with open(model_info_path, 'r') as f:
-                model_info = json.load(f)
-                self.model_importances = model_info.get('feature_importances_gain')
+            try:
+                with open(model_info_path, 'r') as f:
+                    model_info = json.load(f)
+                    self.model_importances = model_info.get('feature_importances_gain')
+            except Exception:
+                pass
 
-        # TreeExplainer with interventional sampling — same setup as Method 2/3
+        # TreeExplainer with interventional sampling
         self.tree_explainer = shap.TreeExplainer(
             model,
             data=background_data,
             feature_perturbation="interventional"
         )
 
-        # Extract max depth from trained LightGBM booster
-        # LightGBM trees use max_depth from hyperparameters
-        self.max_depth = self._get_max_depth()
-        print(f"LayerwiseSHAPExplainer initialised. Max tree depth: {self.max_depth}")
-
-    def _get_max_depth(self) -> int:
-        """Extract max depth from the LightGBM booster."""
-        try:
-            # Try getting from booster parameters
-            booster = self.model.booster_
-            params = booster.dump_model()
-            # Walk one tree to find its actual depth
-            trees = params.get('tree_info', [])
-            if trees:
-                max_d = self._tree_depth(trees[0].get('tree_structure', {}))
-                return max(max_d, 1)
-        except Exception:
-            pass
-        # Fallback: use the configured max_depth
-        return self.config.get('lightgbm', {}).get('max_depth', 6)
-
-    def _tree_depth(self, node: dict, depth: int = 0) -> int:
-        """Recursively find the depth of a LightGBM tree node dict."""
-        if not node or 'left_child' not in node:
-            return depth
-        left = self._tree_depth(node.get('left_child', {}), depth + 1)
-        right = self._tree_depth(node.get('right_child', {}), depth + 1)
-        return max(left, right)
-
-    def _get_split_contributions_for_tree(self, tree_dict: dict,
-                                           sample: np.ndarray,
-                                           feature_idx_map: dict) -> dict:
-        """
-        Walk the decision path for `sample` through one LightGBM tree.
-        At each split node, record: which feature split, at what depth,
-        and what the leaf value difference (contribution) is.
-
-        Returns:
-            dict: {depth: {feature_idx: contribution_value}}
-        """
-        contributions = {}  # {depth: {feature_idx: float}}
-        node = tree_dict.get('tree_structure', {})
-        depth = 0
-
-        while node and 'split_feature' in node:
-            feat_name = node.get('split_feature')
-            feat_idx = feature_idx_map.get(feat_name, -1)
-
-            if feat_idx >= 0:
-                threshold = node.get('threshold', 0)
-                # Contribution = difference in leaf values between branches
-                # Approximate as: right_leaf_val - left_leaf_val weighted by direction
-                left_val = self._get_subtree_mean_value(node.get('left_child', {}))
-                right_val = self._get_subtree_mean_value(node.get('right_child', {}))
-                contribution = right_val - left_val
-
-                if depth not in contributions:
-                    contributions[depth] = {}
-                contributions[depth][feat_idx] = \
-                    contributions[depth].get(feat_idx, 0.0) + contribution
-
-                # Navigate the correct branch for this sample
-                sample_val = sample[feat_idx] if feat_idx < len(sample) else 0
-                try:
-                    threshold_val = float(threshold)
-                    if sample_val <= threshold_val:
-                        node = node.get('left_child', {})
-                    else:
-                        node = node.get('right_child', {})
-                except (ValueError, TypeError):
-                    break
-            else:
-                break
-            depth += 1
-
-        return contributions
-
-    def _get_subtree_mean_value(self, node: dict) -> float:
-        """Recursively compute the mean leaf value of a subtree."""
-        if not node:
-            return 0.0
-        if 'leaf_value' in node:
-            return float(node['leaf_value'])
-        left = self._get_subtree_mean_value(node.get('left_child', {}))
-        right = self._get_subtree_mean_value(node.get('right_child', {}))
-        return (left + right) / 2.0
-
-    def _compute_layerwise_for_sample(self, sample: np.ndarray) -> dict:
-        """
-        Compute layer-wise SHAP contributions for a single sample.
-
-        For each tree in the LightGBM ensemble:
-          - Walk the decision path
-          - Record feature contribution at each split depth
-
-        Aggregate across all trees by depth.
-
-        Returns:
-            dict: {
-                'depth_0': np.array(n_features),
-                'depth_1': np.array(n_features),
-                ...
-                'depth_N': np.array(n_features)
-            }
-        """
-        booster = self.model.booster_
-        model_dump = booster.dump_model()
-        trees = model_dump.get('tree_info', [])
-
-        # Build feature name -> index map from the booster's feature names
-        booster_feature_names = booster.feature_name()
-        feature_idx_map = {name: idx for idx, name in enumerate(booster_feature_names)}
-
-        # Accumulator: depth -> feature_idx -> total contribution across trees
-        depth_accum = {}
-
-        for tree_dict in trees:
-            tree_contributions = self._get_split_contributions_for_tree(
-                tree_dict, sample, feature_idx_map
-            )
-            for depth, feat_contribs in tree_contributions.items():
-                if depth not in depth_accum:
-                    depth_accum[depth] = np.zeros(self.n_features)
-                for feat_idx, contrib in feat_contribs.items():
-                    if feat_idx < self.n_features:
-                        depth_accum[depth][feat_idx] += contrib
-
-        # Normalise by number of trees and fill missing depths with zeros
-        n_trees = len(trees) if trees else 1
-        result = {}
-        for d in range(self.max_depth + 1):
-            key = f'depth_{d}'
-            if d in depth_accum:
-                result[key] = depth_accum[d] / n_trees
-            else:
-                result[key] = np.zeros(self.n_features)
-
-        return result
+        self.num_trees = self.model.booster_.num_trees()
+        # Map 6 sequential stages as "depth_0" to "depth_5" to fit UI seamlessly
+        self.max_depth = 5
+        print(f"LayerwiseSHAPExplainer initialised with {self.num_trees} boosting stages (trees).")
 
     def explain(self, profiles: pd.DataFrame) -> dict:
         """
-        Compute layer-wise local SHAP values for all profiles.
-
-        Returns a dict with:
-          - shap_values        : np.array (n_samples, n_features) — TreeSHAP values
-          - base_value         : float
-          - feature_names      : list
-          - mean_abs_shap      : list (n_features)
-          - profiles           : list
-          - method             : str
-          - model_importances  : dict or None
-          - layerwise_contributions : {
-                'depth_0': list (n_samples, n_features),
-                'depth_1': ...,
-                ...
-            }
-          - layerwise_mean_abs : {
-                'depth_0': list (n_features) — mean |contribution| at each depth
-                ...
-            }
+        Compute layer-wise local SHAP values for all profiles by slicing the ensemble
+        into 6 sequential boosting stages.
         """
-        profiles_arr = profiles.values
         n_profiles = len(profiles)
-
-        # --- Standard TreeSHAP values (Method 2 style) for base comparison ---
+        
+        # 1. Compute standard full-model TreeSHAP values
         shap_values_obj = self.tree_explainer(profiles)
         sv = shap_values_obj.values
         base_values = shap_values_obj.base_values
@@ -242,33 +88,30 @@ class LayerwiseSHAPExplainer(BaseExplainer):
 
         mean_abs_shap = np.abs(sv).mean(axis=0)
 
-        # --- Layer-wise contributions (per-sample, per-depth) ---
-        # Compute for up to 50 samples to keep it manageable
-        max_lw_samples = min(n_profiles, 50)
-        lw_sample_indices = np.random.choice(n_profiles, max_lw_samples, replace=False)
-
-        print(f"Computing layer-wise contributions for {max_lw_samples} samples...")
-
-        # Collect: {depth_key: list of per-sample arrays}
-        layerwise_raw = {f'depth_{d}': [] for d in range(self.max_depth + 1)}
-
-        for k, idx in enumerate(lw_sample_indices):
-            if k % 10 == 0:
-                print(f"  Layer-wise sample {k+1}/{max_lw_samples}...")
-            lw = self._compute_layerwise_for_sample(profiles_arr[idx])
-            for d in range(self.max_depth + 1):
-                key = f'depth_{d}'
-                layerwise_raw[key].append(lw.get(key, np.zeros(self.n_features)))
-
-        print("Layer-wise computation complete.")
-
-        # Convert to arrays
+        # 2. Decompose into 6 sequential boosting rounds (coarse to fine stages)
+        stage_limits = [int(np.ceil(self.num_trees * (d + 1) / 6)) for d in range(6)]
+        
         layerwise_contributions = {}
         layerwise_mean_abs = {}
-        for key, arrays in layerwise_raw.items():
-            arr = np.array(arrays)  # (max_lw_samples, n_features)
-            layerwise_contributions[key] = arr.tolist()
-            layerwise_mean_abs[key] = np.abs(arr).mean(axis=0).tolist()
+        
+        prev_sv = np.zeros_like(sv)
+        
+        for d, limit in enumerate(stage_limits):
+            key = f'depth_{d}'
+            # Call TreeExplainer's optimized C++ shap_values with tree_limit
+            stage_sv_full = self.tree_explainer.shap_values(profiles, tree_limit=limit, check_additivity=False)
+            
+            if isinstance(stage_sv_full, list):
+                stage_sv = stage_sv_full[1]
+            else:
+                stage_sv = stage_sv_full
+                
+            # The contribution of the current stage is the incremental SHAP
+            contrib = stage_sv - prev_sv
+            prev_sv = stage_sv
+            
+            layerwise_contributions[key] = contrib.tolist()
+            layerwise_mean_abs[key] = np.abs(contrib).mean(axis=0).tolist()
 
         return {
             "shap_values": sv.tolist(),
@@ -281,7 +124,7 @@ class LayerwiseSHAPExplainer(BaseExplainer):
             "layerwise_contributions": layerwise_contributions,
             "layerwise_mean_abs": layerwise_mean_abs,
             "max_depth": self.max_depth,
-            "n_samples_computed_layerwise": max_lw_samples,
+            "n_samples_computed_layerwise": n_profiles,
         }
 
     def get_summary(self, shap_result: dict) -> list:
