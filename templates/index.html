@@ -37,7 +37,14 @@
         </div>
         
         <div class="spinner" id="loadingSpinner"></div>
-        <button class="btn-primary" id="runBtn" onclick="runAnalysis()">▶ Run Analysis</button>
+        <div class="mode-selector" style="display: flex; gap: 10px;">
+          <button id="btn-classical" class="btn-primary" onclick="runAnalysis('classical')">
+            ▶ Method 2: Classical SHAP
+          </button>
+          <button id="btn-causal" class="btn-primary" onclick="runAnalysis('causal')">
+            ▶ Method 3: Causal SHAP
+          </button>
+        </div>
     </div>
 
     <div class="error-banner" id="errorBanner"></div>
@@ -67,6 +74,11 @@
         <div class="card full-width">
             <h3>Actual Weights (LGBM Gain) vs Classical SHAP</h3>
             <img id="shapVsWeights" src="" alt="SHAP vs Weights" onclick="openModal(this.src)" style="max-height: 500px; object-fit: contain;">
+        </div>
+
+        <div class="card full-width" id="causalHeatmapCard" style="display: none;">
+            <h3>Causal Plausibility Matrix</h3>
+            <img id="causalHeatmap" src="" alt="Causal Heatmap" onclick="openModal(this.src)" style="max-height: 500px; object-fit: contain;">
         </div>
 
         <div class="card">
@@ -119,8 +131,9 @@
             .catch(err => console.error(err));
     });
 
-    async function runAnalysis() {
-        const btn = document.getElementById('runBtn');
+    async function runAnalysis(mode = 'classical') {
+        const btnClassical = document.getElementById('btn-classical');
+        const btnCausal = document.getElementById('btn-causal');
         const spinner = document.getElementById('loadingSpinner');
         const resultsGrid = document.getElementById('resultsGrid');
         const errorBanner = document.getElementById('errorBanner');
@@ -129,14 +142,16 @@
         const useSynthetic = document.getElementById('useSynthetic').checked;
         const sampleIndex = document.getElementById('sampleIndex').value;
 
-        btn.disabled = true;
+        btnClassical.disabled = true;
+        btnCausal.disabled = true;
         spinner.style.display = 'block';
         errorBanner.style.display = 'none';
         resultsGrid.style.display = 'none';
-        btn.innerText = "Running...";
+
+        const endpoint = mode === 'causal' ? '/api/run-causal-analysis' : '/api/run-analysis';
 
         try {
-            const response = await fetch('/api/run-analysis', {
+            const response = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -156,15 +171,25 @@
         } catch (e) {
             showError("Network error or server down. Check console.");
         } finally {
-            btn.disabled = false;
+            btnClassical.disabled = false;
+            btnCausal.disabled = false;
             spinner.style.display = 'none';
-            btn.innerText = "▶ Run Analysis";
         }
     }
 
     function renderResults(data) {
         document.getElementById('resultsGrid').style.display = 'grid';
         
+        // Mode specific rendering
+        if (data.method === 'causal_shap') {
+            document.querySelector('.title-group p').innerHTML = '<span style="color: var(--accent-green); font-weight: bold;">Method 3 — Causal SHAP</span>';
+            document.getElementById('causalHeatmapCard').style.display = 'block';
+            document.getElementById('causalHeatmap').src = "data:image/png;base64," + data.plots.causal_weights_heatmap;
+        } else {
+            document.querySelector('.title-group p').innerHTML = 'Mode: Classical SHAP';
+            document.getElementById('causalHeatmapCard').style.display = 'none';
+        }
+
         // Render Images
         document.getElementById('summaryBar').src = "data:image/png;base64," + data.plots.summary_bar;
         document.getElementById('shapVsWeights').src = "data:image/png;base64," + data.plots.shap_vs_weights;
@@ -183,12 +208,22 @@
             const tr = document.createElement('tr');
             
             let featureClass = "";
+            let featureStyle = "";
+            
             if (mutableList.includes(row.feature)) featureClass = "mutable";
             if (immutableList.includes(row.feature)) featureClass = "immutable";
+            
+            if (data.method === 'causal_shap') {
+                if (row.is_protected) {
+                    featureStyle = "color: var(--accent-red); font-weight: bold;";
+                } else if (row.is_proxy_candidate) {
+                    featureStyle = "color: #F59E0B; font-weight: bold;";
+                }
+            }
 
             tr.innerHTML = `
                 <td>${row.rank}</td>
-                <td class="${featureClass}">${row.feature}</td>
+                <td class="${featureClass}" style="${featureStyle}">${row.feature}</td>
                 <td>${row.mean_abs_shap.toFixed(4)} (${row.pct.toFixed(1)}%)</td>
                 <td style="color: ${row.direction==='positive' ? 'var(--accent-green)' : 'var(--accent-red)'}">
                     ${row.direction === 'positive' ? '↑ Positive' : '↓ Negative'}

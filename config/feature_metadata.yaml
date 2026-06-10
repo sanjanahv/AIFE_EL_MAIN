@@ -25,7 +25,6 @@ immutable_features:
 
 categorical_features:
   - workclass
-  - education
   - marital_status
   - occupation
   - relationship
@@ -35,7 +34,6 @@ categorical_features:
 
 continuous_features:
   - age
-  - fnlwgt
   - education_num
   - capital_gain
   - capital_loss

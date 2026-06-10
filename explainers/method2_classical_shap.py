@@ -40,7 +40,7 @@ class ClassicalSHAPExplainer(BaseExplainer):
                 base_value = base_value[:, 1]
         
         if isinstance(base_value, np.ndarray):
-            base_value = base_value[0] # Usually same for all if background data is passed, or take mean
+            base_value = float(np.mean(base_value))
 
         # Validation check: SHAP values + base_value should approx equal model prediction (margin/log odds)
         # Note: model.predict_proba gives probability. SHAP gives log odds for TreeExplainer classifier.

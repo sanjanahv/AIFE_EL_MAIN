@@ -1,0 +1,40 @@
+# Causal DAG for UCI Adult Income Dataset
+# Based on domain knowledge of socioeconomic relationships
+# Edges: [cause, effect]
+
+edges:
+  - [age, education_num]          # older people had more time to complete education
+  - [age, hours_per_week]         # age affects work hours (career stage)
+  - [age, capital_gain]           # older people accumulate more capital
+  - [age, capital_loss]           # older people have more investments at risk
+  - [education_num, occupation]   # education level determines available occupations
+  - [education_num, workclass]    # education affects type of employer
+  - [occupation, hours_per_week]  # occupation determines expected hours
+  - [occupation, income]          # occupation directly determines income
+  - [workclass, income]           # employer type directly affects income
+  - [marital_status, relationship] # marital status determines relationship category
+  - [relationship, income]        # household structure affects reported income
+  - [sex, occupation]             # sex affects occupation access (documented bias)
+  - [sex, hours_per_week]         # sex affects hours worked
+  - [race, occupation]            # race affects occupation access (documented bias)
+  - [native_country, occupation]  # country of origin affects occupation access
+  - [capital_gain, income]        # capital gains directly contribute to income
+  - [capital_loss, income]        # capital losses reduce effective income
+  - [hours_per_week, income]      # hours worked directly affects income
+  - [education_num, income]       # education directly affects income
+
+protected_attributes:
+  - sex
+  - race
+
+proxy_candidates:
+  - native_country   # may proxy for race/ethnicity
+  - relationship     # may proxy for sex (wife/husband categories)
+  - occupation       # may proxy for sex/race due to occupational segregation
+
+notes: >
+  This DAG encodes known socioeconomic causal relationships.
+  Protected attributes (sex, race) are included as causes of occupation
+  and hours_per_week to model discrimination pathways explicitly.
+  This allows the causal weight to correctly identify when features
+  like occupation are acting as proxies for protected characteristics.

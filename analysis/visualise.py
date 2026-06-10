@@ -40,6 +40,16 @@ def fig_to_base64(fig) -> str:
     return base64.b64encode(buf.read()).decode('utf-8')
 
 def plot_shap_summary(shap_result: dict, max_features=15) -> str:
+    method = shap_result.get('method', 'classical_shap')
+    method_id = 2 if method == 'classical_shap' else 3
+
+    titles = {
+        'classical_shap': 'Classical SHAP — Feature Attribution Summary',
+        'causal_shap': 'Causal SHAP (Fix 1) — Feature Attribution Summary'
+    }
+    title = titles.get(method, 'SHAP Feature Attribution Summary')
+    color = METHOD_COLORS.get(method_id, METHOD_COLORS[2])
+
     mean_abs_shap = np.array(shap_result['mean_abs_shap'])
     feature_names = np.array(shap_result['feature_names'])
     
@@ -51,11 +61,11 @@ def plot_shap_summary(shap_result: dict, max_features=15) -> str:
     labels = feature_names[sort_idx]
     
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.barh(y_pos, values, color=METHOD_COLORS[2], align='center')
+    ax.barh(y_pos, values, color=color, align='center')
     ax.set_yticks(y_pos, labels=labels)
     ax.invert_yaxis()  # labels read top-to-bottom
     ax.set_xlabel('Mean |SHAP Value|')
-    ax.set_title('Classical SHAP — Feature Attribution Summary')
+    ax.set_title(title)
     
     return fig_to_base64(fig)
 
@@ -68,6 +78,7 @@ def plot_shap_beeswarm(shap_result: dict, max_features=15) -> str:
     # Standard SHAP beeswarm using shap.summary_plot
     # show=False to save to buffer
     try:
+        plt.close('all')
         shap.summary_plot(sv, profiles, feature_names=feature_names, max_display=max_features, show=False)
         # The plot modifies current figure
         fig = plt.gcf()
@@ -173,3 +184,35 @@ def plot_shap_vs_weights(shap_result: dict) -> str:
 
 def get_attribution_table(explainer, shap_result: dict) -> list:
     return explainer.get_summary(shap_result)
+
+def plot_causal_weights_heatmap(causal_graph, feature_names: list) -> str:
+    """
+    Heatmap showing causal plausibility scores between all feature pairs.
+    Rows = target feature i, Columns = coalition member j
+    Value = w^causal plausibility score
+    """
+    n = len(feature_names)
+    matrix = np.zeros((n, n))
+
+    for i, fi in enumerate(feature_names):
+        for j, fj in enumerate(feature_names):
+            if i != j:
+                matrix[i, j] = causal_graph.causal_plausibility(fi, fj)
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    sns.heatmap(
+        matrix,
+        xticklabels=feature_names,
+        yticklabels=feature_names,
+        annot=True,
+        fmt='.2f',
+        cmap='Blues',
+        ax=ax,
+        vmin=0,
+        vmax=1
+    )
+    ax.set_title('Causal Plausibility Matrix\n(row=feature i, col=coalition member j)')
+    ax.set_xlabel('Coalition Member j')
+    ax.set_ylabel('Target Feature i')
+
+    return fig_to_base64(fig)

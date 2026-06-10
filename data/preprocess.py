@@ -50,6 +50,12 @@ def main():
         target_col = 'class' # OpenML adult target is named 'class'
         
     X = df.drop(columns=[target_col])
+    
+    # Drop census sampling weight — no causal meaning
+    X = X.drop(columns=['fnlwgt'])
+    # Drop education string — education_num carries same information
+    X = X.drop(columns=['education'])
+    
     y = df[target_col]
     
     # Encode target: '>50K' -> 1, '<=50K' -> 0
