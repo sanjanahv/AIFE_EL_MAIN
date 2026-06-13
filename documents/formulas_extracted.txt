@@ -1,0 +1,187 @@
+﻿Custom SHAP Formula Suite
+Bias Mitigation in Loan Decisions Using Explainable AI (XAI)
+CI124TA Research Project  ΓÇö  RV College of Engineering, Bengaluru
+
+Formula 0  ΓÇö  Baseline: The Classical SHAP Formula
+
+Before understanding the custom formulas, it is essential to anchor against the standard Shapley value formula from the literature. Every improvement in this document is a deliberate, targeted fix over this baseline.
+
+
+
+Term-by-term breakdown
+╧åß╡ó: ╧åß╡ó is the SHAP value for feature i ΓÇö how much feature i pushed the prediction away from the average model output.
+S: S Γèå F\{i} ΓÇö the sum iterates over every possible subset S of the full feature set F excluding feature i. Each S is a coalition of features that i may join.
+Coalition weight: |S|!(|F| ΓêÆ |S| ΓêÆ 1)! / |F|! ΓÇö the coalition weight, counting how many orderings of all features place this coalition S immediately before feature i. Every ordering is treated as equally probable.
+Marginal contribution: f(S Γê¬ {i}) ΓêÆ f(S) ΓÇö the marginal contribution: model output with feature i added to coalition S, minus output without it.
+
+Why this formula has problems for loan bias detection
+Treats all coalitions as equally plausible ΓÇö ignores that some feature combinations are far more realistic than others in real loan data.
+Ignores causality ΓÇö features like age and credit_history are causally linked, but the formula treats them as independent.
+Applied globally across the entire model ΓÇö misses how attribution patterns differ layer by layer inside LightGBMΓÇÖs boosted trees.
+Uses marginal expectation, which can evaluate the model on impossible data points such as income = 0 with a perfect credit score.
+
+
+Formula 1  ΓÇö  Fix 1: Causal Coalition Weight  wß╢£ß╡âß╡ÿ╦óß╡â╦í(S, i, G)
+
+The first problem with classical SHAP is that it weights all feature coalitions equally, regardless of whether those combinations are causally realistic. This formula replaces the uniform combinatorial weight with a causally-informed probability weight derived from the causal structure of the loan dataset.
+
+
+
+What every term means
+G: G is the causal graph, encoding which features causally influence which others in the loan dataset. In implementation, G is constructed using the PC algorithm on the loan dataset, with domain constraints enforced manually for known causal relationships (e.g. income ΓåÆ repayment ability, age ΓåÆ credit history length).
+do(i): do(i) is PearlΓÇÖs do-operator, denoting intervention on feature i ΓÇö i.e., forcibly setting feature i to some value. This is causal language, not correlational.
+P(S | do(i), G): P(S | do(i), G) is the probability that coalition S is a causally meaningful grouping when evaluating feature i given the causal graph G. Coalitions where features are d-separated from i receive very low probability; causally adjacent coalitions receive high probability.
+Denominator: The denominator normalises across all possible coalitions SΓÇÖ, ensuring all weights sum to 1 ΓÇö making it a valid probability distribution.
+
+
+
+
+What this fixes vs. classical SHAP
+Classical SHAP assigns equal weight to a coalition {zip_code, income} and to {hair_colour, income}. This formula assigns significant weight only to causally plausible groupings.
+By conditioning on do(i), the weight reflects what would actually change in the real world if feature i were manipulated ΓÇö attributions are interventionally meaningful, not merely correlational.
+Proxy variables like zip_code that correlate with protected attributes but have no direct causal path to creditworthiness will have their coalition weights reduced automatically.
+Features that are mere correlates of protected attributes receive low SHAP weight; features with genuine causal bearing on repayment receive high weight.
+
+
+Formula 2  ΓÇö  Fix 2: Layerwise Local SHAP  ╧åß╡ó╦í
+
+Classical SHAP applies to f as a single black box. For gradient-boosted models like LightGBM, which are compositions of many decision trees, this ignores the internal structure entirely. Layerwise SHAP first decomposes the model, then computes SHAP locally within each layer.
+
+Step 1 ΓÇö Decompose the model into layers, then compute SHAP locally at each layer
+
+
+
+Model decomposition: f(x) = f_L Γêÿ f_{LΓêÆ1} Γêÿ ┬╖┬╖┬╖ Γêÿ f_1(x) ΓÇö the model is decomposed into L layers (boosting stages), each f_l being one decision tree in the ensemble.
+╧åß╡ó╦í: ╧åß╡ó╦í is the SHAP value for feature i at layer l. Rather than one global value per feature, we produce L values ΓÇö one per boosting stage.
+N(i, l): N(i, l) is the local neighbourhood of feature i at layer l ΓÇö features that appear in the same subtree or interact with feature i in that treeΓÇÖs splits. Far smaller than the full feature set F.
+Summation scope: The summation runs over S Γèå N(i,l)\{i} only, not over all 2^|F| subsets. This is the source of the enormous computational gain.
+Marginal contribution: f_l(S Γê¬ {i}) ΓêÆ f_l(S) is the marginal contribution at the layer level, isolating feature iΓÇÖs contribution within this specific tree and boosting stage.
+
+Computational gain formula
+
+
+Classical cost: Classical SHAP cost is O(2^|F|) per feature ΓÇö exponential in the total number of features. For a 50-feature loan dataset, that is 2Γü╡Γü░ Γëê 10┬╣Γü╡ coalitions per feature.
+Layer cost: |N(i,l)| equals the average node depth d in a decision tree ΓÇö typically 3 to 6 for LightGBM. So 2^d Γëê 8 to 64 per layer, summed over L boosting rounds.
+Total gain: For L = 100 rounds and d = 5: total cost = 100 ├ù 32 = 3,200 operations vs. 10┬╣Γü╡ classically. A reduction of over ten orders of magnitude.
+
+Step 2 ΓÇö Propagate upward to recover global attribution
+
+
+╧åß╡ó╦í: ╧åß╡ó╦í is the layer-l local SHAP value computed above.
+Jacobian product: ╬áΓéû (ΓêéfΓéû / ΓêéfΓéûΓéïΓéü) is the chain-rule product of Jacobians from layer l upward to the final output, propagating how layer lΓÇÖs output influences the final prediction through all subsequent layers. For tree-based models where exact gradients are unavailable, the Jacobian Γêéf_k/Γêéf_{k-1} is approximated by finite differences between consecutive boosting stage outputs."
+Final attribution: The sum over l aggregates propagated attributions, recovering a global feature attribution that respects the layered internal structure of the model.
+Analogy: This is directly analogous to backpropagation in neural networks: gradients at each layer are multiplied by downstream Jacobians to determine total contribution to the output.
+
+
+Formula 3  ΓÇö  Fix 3: Conditional SHAP  ╧åß╡ó^cond
+
+Classical SHAP uses marginal expectations ΓÇö it samples missing features from their unconditional distribution, ignoring correlations with observed features. This produces unrealistic data points. Conditional SHAP fixes this by conditioning on observed feature values when computing expectations.
+
+
+
+What every term means
+Outer structure: The outer summation and coalition weight are identical to classical SHAP. The entire innovation is inside the square brackets.
+First expectation: E_{x_{F\SΓê¬{i}} | x_{SΓê¬{i}}}[f] is the conditional expectation of f where features not in SΓê¬{i} are drawn from their conditional distribution given the observed values of SΓê¬{i}. Given we know the values of features S plus feature i, what is the expected model output when we sample the remaining features realistically?
+Second expectation: E_{x_{F\S} | x_S}[f] is the same idea without feature i in the conditioning set. Given we know only S, what is the expected output?
+Marginal contribution: The difference is the marginal contribution of feature i, computed on realistic feature combinations that respect the dataΓÇÖs correlation structure.
+
+What this fixes vs. classical SHAP
+Classical SHAP samples missing features unconditionally, producing combinations like ΓÇÿincome = 5L, employment = unemployedΓÇÖ that are near-impossible in reality, distorting attribution.
+Conditional SHAP always samples from a distribution conditioned on observed coalition features. Impossible combinations are naturally suppressed.
+In loan data, many features are highly correlated (income and employment status; age and credit history). Conditional expectations ensure attributions are computed on realistic people only.
+This prevents a proxy variable from appearing highly impactful simply because it correlates with features that are always observed together ΓÇö a critical fix for bias detection.
+
+
+Formula 4  ΓÇö  The Unified Formula  ╧åß╡ó^nature  (All Three Fixes Together)
+
+Having introduced three separate fixes ΓÇö causal weighting, layerwise decomposition, and conditional expectations ΓÇö this formula unifies them into a single, coherent attribution function. This is the core novel contribution of the document.
+
+The intermediate unified formula
+
+
+Summation domain: S Γèå N(i,G)\{i} ΓÇö the summation is restricted to the causal neighbourhood of i in G. Only features causally connected to i are considered as coalition partners.
+w^causal: w^causal(S, i, G) is the causal coalition weight from Fix 1 ΓÇö ensuring only causally plausible coalitions receive significant weight.
+Expectations: E_{x|x_S}[f_l] and E_{x|x_{SΓê¬{i}}}[f_l] are the conditional expectations at layer l from Fix 3 ΓÇö evaluated on realistic feature combinations only.
+
+The redefined weight: global causal plausibility + local structural fairness
+
+
+First factor (causal): The first factor P(S|do(i),G) / ╬ú P(SΓÇÖ|do(i),G) is the causal weight from Fix 1 ΓÇö labelled ΓÇÿglobal causal plausibilityΓÇÖ in the image.
+Second factor (layer): The second factor |SΓê⌐N(i,l)|!(|N(i,l)|ΓêÆ|SΓê⌐N(i,l)|ΓêÆ1)! / |N(i,l)|! is the layerwise Shapley weight from Fix 2 ΓÇö labelled ΓÇÿlocal structural fairnessΓÇÖ.
+Note: The normalised w^unified preserves the efficiency property approximately ΓÇö exact efficiency holds when the causal neighbourhood N(i,G) spans all features. For restricted neighbourhoods, a small residual term may arise, which is added to the baseline correction term in implementation.
+Normalisation: The normalised form w^unified = (w^causal ┬╖ w^layer) / ╬ú (w^causal ┬╖ w^layer) ensures all weights sum to 1, preserving the efficiency property of SHAP.
+Product effect: Multiplying both factors imposes two constraints simultaneously: the coalition must be causally valid AND structurally local to feature i at its layer.
+
+The full redefined unified SHAP formula ╧åß╡ó^nature
+
+
+Unified weight: The unified weight w^causal(S,i,G) ┬╖ w^layer(S,i,l) in the numerator simultaneously ranks coalitions by causal plausibility and structural locality.
+Normaliser: The denominator ╬úΓé¢ΓÇÖ w^causal(SΓÇÖ,i,G) ┬╖ w^layer(SΓÇÖ,i,l) normalises across all valid coalitions in the causal neighbourhood N(i,G).
+Core difference: E_{x|x_{SΓê¬{i}}}[f_l] ΓêÆ E_{x|x_S}[f_l] is the conditional marginal contribution at layer l ΓÇö combining Fix 2 (layer-specific) and Fix 3 (conditional) simultaneously.
+image8 note: The causal weight from image8 is the same w^causal already introduced in Formula 1 ΓÇö it is restated here to show exactly what is being substituted into the unified formula.
+
+Causal weight ΓÇö restated for reference
+
+
+
+Comparison Analysis  ΓÇö  Classical SHAP vs. Custom Formula Suite
+
+Aspect
+Classical SHAP (╧åß╡ó)
+Custom ╧åß╡ó^nature (this work)
+Coalition weighting
+Uniform weight ΓÇö all coalitions equally plausible
+Causal weight w^causal ΓÇö only causally valid coalitions receive significant weight
+Feature independence
+Assumes all features are independent when sampling missing values
+Conditional expectations E[f|x_S] ΓÇö respects real-world feature correlations
+Model structure
+Treats f as a single black box with no awareness of internal layers
+Layerwise decomposition ΓÇö SHAP computed at each LightGBM boosting stage
+Computational cost
+O(2^|F|) ΓÇö exponential in total features, infeasible for high-dimensional data
+O(L ┬╖ 2^d) ΓÇö linear in boosting rounds, exponential only in local tree depth
+Proxy variables
+Cannot distinguish causal features from statistically correlated proxies
+Proxy variables suppressed because causal graph G excludes non-causal paths
+Data realism
+May evaluate model on impossible feature combinations (marginal expectation)
+Only evaluates model on realistic combinations (conditional expectation)
+Regulatory alignment
+Attribution does not correspond to interventional fairness required by FCRA/GDPR
+do(i) operator measures interventional effect ΓÇö directly aligns with regulatory intent
+Bias detection
+High false-positive rate: correlated features appear important even if causally irrelevant
+Causally irrelevant proxies suppressed; true drivers of rejection reliably surfaced
+
+
+
+Plain-English Explanation  ΓÇö  How This Is a Crucial Part of the Project
+
+The following section explains, in straightforward language, what these formulas are doing and why they are not just mathematical refinements but the central analytical engine of the entire project.
+
+What the project is trying to do
+This project is about fairness in loan decisions. The core question is: when a bankΓÇÖs AI model rejects someoneΓÇÖs loan application, is that rejection based on genuine financial risk ΓÇö or is it secretly based on who the person is? Are factors like race, gender, or neighbourhood being smuggled into the decision through proxy variables such as zip code or surname? The project uses Explainable AI to answer this, and the custom SHAP formulas here are the mechanism that makes the explanation accurate enough to trust.
+
+Why ordinary SHAP is not enough
+Standard SHAP tells you which features contributed to the rejection ΓÇö but in a way that can be profoundly misleading. It would assign high importance to zip_code if zip_code correlates with the outcome, even if zip_code has no genuine causal role in determining whether a person can repay a loan. If the model has learned to use zip_code as a proxy for race, standard SHAP would report zip_code as highly important, but would not distinguish ΓÇÿthis is a legitimate financial signalΓÇÖ from ΓÇÿthis is racial bias dressed up as geographyΓÇÖ. That distinction is everything in a fairness audit.
+
+What the three fixes mean in plain words
+Fix 1 ΓÇö Causal Weighting: Instead of treating every possible feature combination as equally worth examining, the formula only weighs combinations that are causally meaningful. If income and employment are causally connected, the formula evaluates them together. If zip_code and income are only statistically correlated but zip_code has no causal path to repayment ability, it is downweighted. This directly identifies proxy discrimination.
+
+Fix 2 ΓÇö Layerwise SHAP: LightGBM is not one model ΓÇö it is hundreds of decision trees stacked on top of each other. Standard SHAP treats all of them as one big machine. Layerwise SHAP asks what each individual tree did, and how that accumulated into the final answer. The explanation is more precise ΓÇö like auditing each step of a multi-step calculation rather than just reading the final number.
+
+Fix 3 ΓÇö Conditional Expectations: Standard SHAP sometimes tests the model on feature combinations that simply do not exist in the real world. It might ask what the model would predict for someone with zero income and a perfect credit score. That person does not exist. Conditional SHAP only asks counterfactual questions about realistic people, making the attributions credible and defensible in a regulatory context.
+
+Why this matters specifically for this project
+The project uses two parallel testing tracks ΓÇö one with synthetically generated extreme profiles, and one with real loan data. The custom SHAP formulas are essential to both. In the synthetic track, extreme profiles stress-test the modelΓÇÖs fairness: does the model treat a high-income person from a historically disadvantaged neighbourhood fairly? Without causal and conditional SHAP, the attribution output might falsely flag income as the rejection reason when it is actually zip_code acting as a proxy. In the real data track, the formulas surface the true drivers of systematic rejections across demographic groups, feeding directly into the AIF360 debiasing algorithms ΓÇö telling them which features to target for correction.
+
+The unified formula ╧åß╡ó^nature as the central engine
+The unified formula ╧åß╡ó^nature is not a mathematical exercise ΓÇö it is the single analytical engine that powers the entire XAI layer of the projectΓÇÖs architecture. Every loan decision that the system explains passes through this formula. Every attribution that the counterfactual engine converts into a human-readable explanation is produced by ╧åß╡ó^nature. Every proxy variable flagged by the bias detection module is flagged because ╧åß╡ó^nature assigned it a low causal weight. Every before-and-after comparison shown to the user is built by comparing ╧åß╡ó^nature values before and after AIF360 debiasing. Without this formula, the project has no reliable, fair, or interpretable basis for any of its outputs.
+
+The research novelty
+The combination of causal graph-guided coalition weighting, layerwise decomposition for LightGBMΓÇÖs tree structure, and conditional expectations for data realism represents a novel integration not formalised in this specific configuration in prior literature. The individual components ΓÇö CausalSHAP, TreeSHAP, ConditionalSHAP ΓÇö exist separately. Their unification into a single normalised weight function applied to a layerwise conditional SHAP framework, specifically in the context of algorithmic fairness for loan decisions, is the research novelty of this projectΓÇÖs XAI layer.
+
+
+End of SHAP Formula Documentation
+CI124TA  |  RVCE  |  Bias Mitigation in Loan Decisions Using Explainable AI

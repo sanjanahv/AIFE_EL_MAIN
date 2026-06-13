@@ -1,0 +1,35 @@
+{
+  "auc_test": 0.9269,
+  "accuracy_test": 0.8303,
+  "f1_test": 0.7153,
+  "n_features": 12,
+  "feature_names": [
+    "workclass",
+    "marital_status",
+    "occupation",
+    "relationship",
+    "race",
+    "sex",
+    "native_country",
+    "age",
+    "education_num",
+    "capital_gain",
+    "capital_loss",
+    "hours_per_week"
+  ],
+  "n_estimators_actual": 500,
+  "feature_importances_gain": {
+    "workclass": 0.01358,
+    "marital_status": 0.14805,
+    "occupation": 0.044944,
+    "relationship": 0.251422,
+    "race": 0.004319,
+    "sex": 0.007386,
+    "native_country": 0.007753,
+    "age": 0.09537,
+    "education_num": 0.147998,
+    "capital_gain": 0.167178,
+    "capital_loss": 0.057596,
+    "hours_per_week": 0.054404
+  }
+}

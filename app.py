@@ -10,6 +10,9 @@ from profile_generator.generator import ProfileGenerator
 from explainers.method2_classical_shap import ClassicalSHAPExplainer
 from explainers.method3_causal_shap import CausalSHAPExplainer
 from explainers.method4_layerwise_shap import LayerwiseSHAPExplainer
+from explainers.method5_conditional_shap import ConditionalSHAPExplainer
+from explainers.method6_unified_shap import UnifiedSHAPExplainer
+from explainers.method7_counterfactual import CounterfactualExplainer
 from analysis.visualise import (
     plot_shap_summary,
     plot_shap_beeswarm,
@@ -381,6 +384,222 @@ def run_layerwise_analysis():
         })
 
 
+@app.route('/api/run-conditional-analysis', methods=['POST'])
+def run_conditional_analysis():
+    """Output 5: Conditional SHAP (Fix 3 / Formula 3)."""
+    errors = []
+    try:
+        req_data = request.json or {}
+        n_profiles = int(req_data.get('n_profiles', 50))
+        use_synthetic = bool(req_data.get('use_synthetic', False))
+
+        start_time = time.time()
+
+        model_path = os.path.join(MODELS_DIR, 'model.pkl')
+        if not os.path.exists(model_path):
+            raise FileNotFoundError('Model not found. Run setup first.')
+        model = joblib.load(model_path)
+
+        config_path = os.path.join(CONFIG_DIR, 'hyperparameters.yaml')
+        metadata_path = os.path.join(DATA_DIR, 'processed', 'metadata.json')
+        generator = ProfileGenerator(config_path, metadata_path, DATA_DIR)
+        profiles = generator.generate(n_profiles=n_profiles, use_synthetic=use_synthetic)
+
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+
+        background_samples = config['shap'].get('background_samples', 100)
+        X_train = pd.read_parquet(os.path.join(DATA_DIR, 'processed', 'X_train.parquet'))
+        background_data = X_train.sample(n=min(background_samples, len(X_train)), random_state=42)
+        model_info_path = os.path.join(MODELS_DIR, 'model_info.json')
+
+        explainer = ConditionalSHAPExplainer(
+            model, background_data, generator.feature_names, config,
+            model_info_path=model_info_path
+        )
+
+        shap_result = explainer.explain(profiles)
+        summary_bar = plot_shap_summary(shap_result)
+        attribution_table = explainer.get_summary(shap_result)
+        computation_time = time.time() - start_time
+        model_info = get_model_info()
+
+        return jsonify({
+            'status': 'success',
+            'method': 'conditional_shap',
+            'model_info': {
+                'auc': model_info.get('auc_test'),
+                'n_features': model_info.get('n_features'),
+                'feature_names': model_info.get('feature_names')
+            },
+            'profiles_generated': len(profiles),
+            'shap_results': {
+                'attribution_table': attribution_table,
+                'n_profiles_analysed': shap_result.get('n_samples_computed'),
+                'base_value': shap_result['base_value'],
+                'computation_time_seconds': round(computation_time, 2)
+            },
+            'plots': {'summary_bar': summary_bar},
+            'errors': errors
+        })
+    except Exception as e:
+        import traceback
+        errors.append(str(e))
+        errors.append(traceback.format_exc())
+        return jsonify({'status': 'error', 'message': 'Conditional SHAP analysis failed.', 'errors': errors})
+
+
+@app.route('/api/run-unified-analysis', methods=['POST'])
+def run_unified_analysis():
+    """Output 6: Unified SHAP phi_i^nature (Formula 4)."""
+    errors = []
+    try:
+        req_data = request.json or {}
+        n_profiles = int(req_data.get('n_profiles', 20))
+        use_synthetic = bool(req_data.get('use_synthetic', False))
+
+        start_time = time.time()
+
+        model_path = os.path.join(MODELS_DIR, 'model.pkl')
+        if not os.path.exists(model_path):
+            raise FileNotFoundError('Model not found. Run setup first.')
+        model = joblib.load(model_path)
+
+        config_path = os.path.join(CONFIG_DIR, 'hyperparameters.yaml')
+        metadata_path = os.path.join(DATA_DIR, 'processed', 'metadata.json')
+        generator = ProfileGenerator(config_path, metadata_path, DATA_DIR)
+        profiles = generator.generate(n_profiles=n_profiles, use_synthetic=use_synthetic)
+
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+
+        background_samples = config['shap'].get('background_samples', 100)
+        X_train = pd.read_parquet(os.path.join(DATA_DIR, 'processed', 'X_train.parquet'))
+        background_data = X_train.sample(n=min(background_samples, len(X_train)), random_state=42)
+
+        dag_config_path = os.path.join(CONFIG_DIR, 'causal_dag.yaml')
+        model_info_path = os.path.join(MODELS_DIR, 'model_info.json')
+
+        explainer = UnifiedSHAPExplainer(
+            model, background_data, generator.feature_names, config,
+            dag_config_path=dag_config_path, model_info_path=model_info_path
+        )
+
+        shap_result = explainer.explain(profiles)
+        summary_bar = plot_shap_summary(shap_result)
+        attribution_table = explainer.get_summary(shap_result)
+        computation_time = time.time() - start_time
+        model_info = get_model_info()
+
+        return jsonify({
+            'status': 'success',
+            'method': 'unified_shap',
+            'model_info': {
+                'auc': model_info.get('auc_test'),
+                'n_features': model_info.get('n_features'),
+                'feature_names': model_info.get('feature_names')
+            },
+            'profiles_generated': len(profiles),
+            'causal_graph_info': shap_result.get('causal_graph_info', {}),
+            'shap_results': {
+                'attribution_table': attribution_table,
+                'n_profiles_analysed': shap_result.get('n_samples_computed'),
+                'base_value': shap_result['base_value'],
+                'computation_time_seconds': round(computation_time, 2)
+            },
+            'unified_info': {
+                'n_stages': shap_result.get('n_stages'),
+                'jacobian_chain': shap_result.get('jacobian_chain'),
+                'causal_neighbourhoods': shap_result.get('causal_neighbourhoods'),
+            },
+            'plots': {'summary_bar': summary_bar},
+            'errors': errors
+        })
+    except Exception as e:
+        import traceback
+        errors.append(str(e))
+        errors.append(traceback.format_exc())
+        return jsonify({'status': 'error', 'message': 'Unified SHAP analysis failed.', 'errors': errors})
+
+
+@app.route('/api/run-counterfactual-analysis', methods=['POST'])
+def run_counterfactual_analysis():
+    """Output 7: Unified SHAP + Counterfactuals."""
+    errors = []
+    try:
+        req_data = request.json or {}
+        n_profiles = int(req_data.get('n_profiles', 10))
+        use_synthetic = bool(req_data.get('use_synthetic', False))
+
+        start_time = time.time()
+
+        model_path = os.path.join(MODELS_DIR, 'model.pkl')
+        if not os.path.exists(model_path):
+            raise FileNotFoundError('Model not found. Run setup first.')
+        model = joblib.load(model_path)
+
+        config_path = os.path.join(CONFIG_DIR, 'hyperparameters.yaml')
+        metadata_path = os.path.join(DATA_DIR, 'processed', 'metadata.json')
+        generator = ProfileGenerator(config_path, metadata_path, DATA_DIR)
+        profiles = generator.generate(n_profiles=n_profiles, use_synthetic=use_synthetic)
+
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+
+        background_samples = config['shap'].get('background_samples', 100)
+        X_train = pd.read_parquet(os.path.join(DATA_DIR, 'processed', 'X_train.parquet'))
+        background_data = X_train.sample(n=min(background_samples, len(X_train)), random_state=42)
+
+        dag_config_path = os.path.join(CONFIG_DIR, 'causal_dag.yaml')
+        feature_metadata_path = os.path.join(CONFIG_DIR, 'feature_metadata.yaml')
+        model_info_path = os.path.join(MODELS_DIR, 'model_info.json')
+
+        explainer = CounterfactualExplainer(
+            model, background_data, generator.feature_names, config,
+            dag_config_path=dag_config_path,
+            feature_metadata_path=feature_metadata_path,
+            model_info_path=model_info_path
+        )
+
+        result = explainer.explain(profiles)
+        summary_bar = plot_shap_summary(result)
+        attribution_table = explainer.get_summary(result)
+        computation_time = time.time() - start_time
+        model_info = get_model_info()
+
+        return jsonify({
+            'status': 'success',
+            'method': 'counterfactual_shap',
+            'model_info': {
+                'auc': model_info.get('auc_test'),
+                'n_features': model_info.get('n_features'),
+                'feature_names': model_info.get('feature_names')
+            },
+            'profiles_generated': len(profiles),
+            'shap_results': {
+                'attribution_table': attribution_table,
+                'n_profiles_analysed': result.get('n_counterfactuals_total'),
+                'base_value': result['base_value'],
+                'computation_time_seconds': round(computation_time, 2)
+            },
+            'counterfactual_results': {
+                'counterfactuals': result['counterfactuals'],
+                'success_rate': result['success_rate'],
+                'n_found': result['n_counterfactuals_found'],
+                'n_total': result['n_counterfactuals_total'],
+                'mutable_features': result['mutable_features'],
+                'immutable_features': result['immutable_features'],
+            },
+            'plots': {'summary_bar': summary_bar},
+            'errors': errors
+        })
+    except Exception as e:
+        import traceback
+        errors.append(str(e))
+        errors.append(traceback.format_exc())
+        return jsonify({'status': 'error', 'message': 'Counterfactual analysis failed.', 'errors': errors})
+
+
 @app.route('/api/compare-methods', methods=['POST'])
 def compare_methods():
     """
@@ -391,7 +610,7 @@ def compare_methods():
     {
         "n_profiles": 100,
         "use_synthetic": false,
-        "methods": ["classical", "causal", "layerwise"]
+        "methods": ["classical", "causal", "layerwise", "conditional", "unified"]
     }
     """
     errors = []
@@ -400,7 +619,7 @@ def compare_methods():
         n_profiles = int(req_data.get('n_profiles', 100))
         use_synthetic = bool(req_data.get('use_synthetic', False))
         requested_methods = req_data.get(
-            'methods', ['classical', 'causal', 'layerwise']
+            'methods', ['classical', 'causal', 'layerwise', 'conditional', 'unified']
         )
 
         start_time = time.time()
@@ -436,9 +655,11 @@ def compare_methods():
 
         method_results = {}
         method_labels = {
-            'classical': 'Classical SHAP',
-            'causal':    'Causal SHAP',
-            'layerwise': 'Layerwise SHAP',
+            'classical':   'Classical SHAP',
+            'causal':      'Causal SHAP',
+            'layerwise':   'Layerwise SHAP',
+            'conditional': 'Conditional SHAP',
+            'unified':     'Unified SHAP',
         }
 
         for method_key in requested_methods:
@@ -464,6 +685,23 @@ def compare_methods():
                     exp = LayerwiseSHAPExplainer(
                         model, background_data,
                         generator.feature_names, config,
+                        model_info_path=model_info_path
+                    )
+                    result = exp.explain(profiles)
+
+                elif method_key == 'conditional':
+                    exp = ConditionalSHAPExplainer(
+                        model, background_data,
+                        generator.feature_names, config,
+                        model_info_path=model_info_path
+                    )
+                    result = exp.explain(profiles)
+
+                elif method_key == 'unified':
+                    exp = UnifiedSHAPExplainer(
+                        model, background_data,
+                        generator.feature_names, config,
+                        dag_config_path=dag_config_path,
                         model_info_path=model_info_path
                     )
                     result = exp.explain(profiles)

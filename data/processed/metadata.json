@@ -1,0 +1,74 @@
+{
+  "dataset": "adult_income",
+  "n_train": 36177,
+  "n_test": 9045,
+  "n_features": 12,
+  "feature_names": [
+    "workclass",
+    "marital_status",
+    "occupation",
+    "relationship",
+    "race",
+    "sex",
+    "native_country",
+    "age",
+    "education_num",
+    "capital_gain",
+    "capital_loss",
+    "hours_per_week"
+  ],
+  "feature_names_original": [
+    "workclass",
+    "marital_status",
+    "occupation",
+    "relationship",
+    "race",
+    "sex",
+    "native_country",
+    "age",
+    "education_num",
+    "capital_gain",
+    "capital_loss",
+    "hours_per_week"
+  ],
+  "mutable_indices": [
+    8,
+    11,
+    0,
+    2,
+    9,
+    10,
+    1
+  ],
+  "immutable_indices": [
+    7,
+    5,
+    4,
+    6,
+    3
+  ],
+  "sensitive_indices": [
+    5,
+    4
+  ],
+  "class_balance": {
+    "0": 27211,
+    "1": 8966
+  },
+  "categorical_features": [
+    "workclass",
+    "marital_status",
+    "occupation",
+    "relationship",
+    "race",
+    "sex",
+    "native_country"
+  ],
+  "continuous_features": [
+    "age",
+    "education_num",
+    "capital_gain",
+    "capital_loss",
+    "hours_per_week"
+  ]
+}
