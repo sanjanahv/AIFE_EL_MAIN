@@ -75,7 +75,7 @@ class LayerwiseSHAPExplainer(BaseExplainer):
         self.n_stages = 6
         self.max_depth = self.n_stages - 1  # for UI display
         self.stage_limits = [
-            int(np.ceil(self.num_trees * (d + 1) / self.n_stages))
+            min(int(np.ceil(self.num_trees * (d + 1) / self.n_stages)), self.num_trees)
             for d in range(self.n_stages)
         ]
 

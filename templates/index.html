@@ -644,6 +644,9 @@
     <button class="btn btn-m4" id="btnM4" onclick="runAnalysis('layerwise')">
       <span class="btn-icon">🔬</span> Output 4 — Layer-wise SHAP
     </button>
+    <button id="btn-compare" class="mode-btn" onclick="runAnalysis('compare')" style="padding: 12px 22px; border-radius: 8px; font-size: 14px; font-weight: 600; border: none; cursor: pointer; background: linear-gradient(135deg, #8B5CF6, #6D28D9); color: white; box-shadow: 0 4px 16px rgba(139,92,246,0.25);">
+      <span class="btn-icon">⚖️</span> Compare All Methods
+    </button>
   </div>
 
   <!-- ── ERROR BANNER ─────────────────────────────── -->
@@ -684,6 +687,7 @@
       <button class="tab-btn"        id="tabBtn-shap"      onclick="switchTab('shap')">🔍 SHAP Analysis</button>
       <button class="tab-btn"        id="tabBtn-table"     onclick="switchTab('table')">📋 Attribution Table</button>
       <button class="tab-btn"        id="tabBtn-special"   onclick="switchTab('special')" id="specialTab">🧬 Method Details</button>
+      <button class="tab-btn"        id="tabBtn-compare"   onclick="switchTab('compare')" style="display:none">⚖️ Compare All</button>
     </div>
 
     <!-- TAB: OVERVIEW -->
@@ -844,6 +848,23 @@
         </div>
       </div>
     </div>
+
+    <!-- TAB: COMPARE METHODS -->
+    <div class="tab-panel fade-in" id="panel-compare">
+      <div class="card full">
+        <div class="card-header">
+          <div class="card-title">Attribution Comparison Across SHAP Methods</div>
+        </div>
+        <img class="plot-img" id="methodComparisonPlot" onclick="openModal(this.src)">
+      </div>
+      <div class="card full" style="margin-top:16px">
+        <div class="card-header">
+          <div class="card-title">Attribution Shift</div>
+        </div>
+        <img class="plot-img" id="attributionShiftPlot" onclick="openModal(this.src)">
+      </div>
+      <div id="compareTablesContainer" style="margin-top:16px"></div>
+    </div>
   </div><!-- /resultsSection -->
 
 </div><!-- /page -->
@@ -965,13 +986,15 @@ async function runAnalysis(mode) {
   }, mode === 'causal' ? 30000 : 4000);
 
   const endpoints = {
-    classical: '/api/run-analysis',
-    causal:    '/api/run-causal-analysis',
-    layerwise: '/api/run-layerwise-analysis'
+    'classical':  '/api/run-analysis',
+    'causal':     '/api/run-causal-analysis',
+    'layerwise':  '/api/run-layerwise-analysis',
+    'compare':    '/api/compare-methods'
   };
+  const endpoint = endpoints[mode] || '/api/run-analysis';
 
   try {
-    const resp = await fetch(endpoints[mode], {
+    const resp = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -985,7 +1008,12 @@ async function runAnalysis(mode) {
     if (data.status === 'error') {
       showError(data.message + '\n' + (data.errors || []).join('\n'));
     } else {
-      renderResults(data, mode);
+      if (mode === 'compare') {
+        renderCompareResults(data);
+      } else {
+        document.getElementById('tabBtn-compare').style.display = 'none';
+        renderResults(data, mode);
+      }
     }
   } catch(e) {
     showError('Network error — is Flask running on port 5000?\n' + e.message);
@@ -999,6 +1027,66 @@ async function runAnalysis(mode) {
 /* ═══════════════════════════════════════════════
    RENDER RESULTS
 ═══════════════════════════════════════════════ */
+function renderCompareResults(data) {
+  activeMethod = 'compare';
+  const p = data.plots;
+  
+  document.getElementById('metaProfiles').textContent = data.profiles_generated + ' profiles';
+  document.getElementById('metaAuc').textContent = 'AUC ' + (data.model_info?.auc || '—');
+  document.getElementById('metaTime').textContent = data.computation_time_seconds + 's';
+  document.getElementById('metaBase').textContent = '';
+
+  const badge = document.getElementById('methodBadge');
+  badge.className = 'results-method-badge badge-m4';
+  badge.textContent = '⚖️ Compare All Methods';
+  
+  document.getElementById('tabBtn-compare').style.display = 'inline-block';
+  
+  setImg('methodComparisonPlot', p.method_comparison);
+  setImg('attributionShiftPlot', p.attribution_shift);
+  
+  const container = document.getElementById('compareTablesContainer');
+  container.innerHTML = '';
+  for (const [method, table] of Object.entries(data.attribution_tables)) {
+    const details = document.createElement('details');
+    details.className = 'card full';
+    details.style.marginBottom = '16px';
+    details.innerHTML = `
+      <summary class="card-header" style="cursor:pointer; margin-bottom:0; outline:none;">
+        <div class="card-title">${method} Attribution Table</div>
+      </summary>
+      <div class="attr-table-wrap" style="margin-top:16px">
+        <table>
+          <thead>
+            <tr><th>#</th><th>Feature</th><th>Mean |SHAP|</th><th>% Impact</th></tr>
+          </thead>
+          <tbody id="tbody-${method.replace(/\s+/g, '')}"></tbody>
+        </table>
+      </div>
+    `;
+    container.appendChild(details);
+    const tbody = document.getElementById(`tbody-${method.replace(/\s+/g, '')}`);
+    table.forEach(row => {
+      const tr = document.createElement('tr');
+      const barW = Math.round(row.pct);
+      tr.innerHTML = `
+        <td class="rank-cell">${row.rank}</td>
+        <td class="feat-cell">${row.feature}</td>
+        <td class="shap-cell">${row.mean_abs_shap.toFixed(4)}</td>
+        <td class="bar-cell">
+          <div style="font-size:11px;color:var(--sub)">${row.pct.toFixed(1)}%</div>
+          <div class="pct-bar" style="width:${Math.min(barW*2,100)}%;background:var(--m2)"></div>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  document.getElementById('resultsSection').classList.add('show');
+  switchTab('compare');
+  document.getElementById('resultsSection').scrollIntoView({ behavior: 'smooth' });
+}
+
 function renderResults(data, mode) {
   activeMethod = mode;
   const p = data.plots;

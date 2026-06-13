@@ -276,3 +276,135 @@ def plot_layerwise_depth_heatmap(shap_result: dict, max_features: int = 15) -> s
     ax.tick_params(axis='x', rotation=0)
 
     return fig_to_base64(fig)
+
+
+def plot_method_comparison(results: dict) -> str:
+    """
+    Side-by-side grouped bar chart comparing mean |SHAP| per feature
+    across all available methods.
+
+    Parameters:
+        results: dict of method_name -> shap_result_dict
+                 e.g. {"Classical SHAP": result2,
+                       "Causal SHAP": result3,
+                       "Layerwise SHAP": result4}
+
+    Returns:
+        base64 PNG string
+    """
+    methods = list(results.keys())
+    if not methods:
+        return ""
+
+    feature_names = results[methods[0]]['feature_names']
+    n_features = len(feature_names)
+    n_methods = len(methods)
+
+    x = np.arange(n_features)
+    width = 0.8 / n_methods
+
+    fig, ax = plt.subplots(figsize=(max(12, n_features * 1.2), 6))
+
+    method_color_map = {
+        'Classical SHAP':   METHOD_COLORS[2],
+        'Causal SHAP':      METHOD_COLORS[3],
+        'Layerwise SHAP':   METHOD_COLORS[4],
+        'Conditional SHAP': METHOD_COLORS[5],
+        'Unified SHAP':     METHOD_COLORS[6],
+    }
+
+    for k, method_name in enumerate(methods):
+        mean_abs = np.array(results[method_name]['mean_abs_shap'])
+        offset = (k - n_methods / 2 + 0.5) * width
+        color = method_color_map.get(method_name, '#6B7280')
+        ax.bar(
+            x + offset, mean_abs, width,
+            label=method_name,
+            color=color,
+            alpha=0.85,
+            edgecolor='white',
+            linewidth=0.5
+        )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(feature_names, rotation=45, ha='right', fontsize=9)
+    ax.set_xlabel('Feature')
+    ax.set_ylabel('Mean |SHAP Value|')
+    ax.set_title('Attribution Comparison Across SHAP Methods',
+                 fontsize=13, fontweight='bold')
+    ax.legend(loc='upper right', framealpha=0.9)
+    ax.set_xlim(-0.5, n_features - 0.5)
+
+    plt.tight_layout()
+    return fig_to_base64(fig)
+
+
+def plot_attribution_shift_table(results: dict) -> str:
+    """
+    Heatmap showing how much attribution SHIFTS for each feature
+    between consecutive methods.
+
+    Rows = features
+    Columns = method transitions (e.g. Classical->Causal, Causal->Layerwise)
+    Colour = diverging (red = attribution increased, blue = decreased)
+
+    Parameters:
+        results: ordered dict of method_name -> shap_result_dict
+
+    Returns:
+        base64 PNG string
+    """
+    methods = list(results.keys())
+    if len(methods) < 2:
+        return ""
+
+    feature_names = results[methods[0]]['feature_names']
+    n_features = len(feature_names)
+    n_transitions = len(methods) - 1
+
+    shift_matrix = np.zeros((n_features, n_transitions))
+    col_labels = []
+
+    for t in range(n_transitions):
+        prev_method = methods[t]
+        curr_method = methods[t + 1]
+        prev_abs = np.array(results[prev_method]['mean_abs_shap'])
+        curr_abs = np.array(results[curr_method]['mean_abs_shap'])
+        shift_matrix[:, t] = curr_abs - prev_abs
+        col_labels.append(
+            f"{prev_method.split()[0]}->{curr_method.split()[0]}"
+        )
+
+    fig, ax = plt.subplots(
+        figsize=(max(8, n_transitions * 2.5), max(6, n_features * 0.5))
+    )
+
+    vmax = np.abs(shift_matrix).max()
+    vmax = max(vmax, 0.001)
+
+    import seaborn as sns
+    sns.heatmap(
+        shift_matrix,
+        xticklabels=col_labels,
+        yticklabels=feature_names,
+        annot=True,
+        fmt='.4f',
+        cmap='RdBu_r',
+        center=0,
+        vmin=-vmax,
+        vmax=vmax,
+        ax=ax,
+        linewidths=0.3,
+        linecolor='#334155'
+    )
+
+    ax.set_title(
+        'Attribution Shift Per Method Transition\n'
+        '(Red = attribution increased, Blue = decreased)',
+        fontsize=12, fontweight='bold'
+    )
+    ax.set_xlabel('Method Transition')
+    ax.set_ylabel('Feature')
+
+    plt.tight_layout()
+    return fig_to_base64(fig)

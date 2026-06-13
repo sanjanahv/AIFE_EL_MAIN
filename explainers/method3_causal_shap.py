@@ -100,7 +100,6 @@ class CausalSHAPExplainer(BaseExplainer):
 
         for i, feature_i in enumerate(self.feature_names):
             other_features = [f for f in self.feature_names if f != feature_i]
-            other_indices = [feature_idx[f] for f in other_features]
             coalition_weights = self._precomputed_weights[feature_i]
 
             phi_i = 0.0
@@ -115,8 +114,8 @@ class CausalSHAPExplainer(BaseExplainer):
                 absent_indices = [feature_idx[f] for f in other_features
                                   if f not in coalition_frozen]
 
-                # Compute f(S∪{i}): fix coalition + feature i, marginalise absent
-                # Compute f(S): fix coalition only, marginalise absent + feature i
+                # f(S∪{i}): sample value for coalition + feature i; background values for absent features
+                # f(S): sample value for coalition only; background values for absent features + feature i
 
                 # Build masked inputs for f(S∪{i})
                 inputs_with_i = np.tile(sample, (n_background, 1))

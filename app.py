@@ -18,7 +18,9 @@ from analysis.visualise import (
     plot_shap_vs_weights,
     get_attribution_table,
     plot_causal_weights_heatmap,
-    plot_layerwise_depth_heatmap
+    plot_layerwise_depth_heatmap,
+    plot_method_comparison,
+    plot_attribution_shift_table
 )
 
 app = Flask(__name__)
@@ -376,6 +378,161 @@ def run_layerwise_analysis():
             "status": "error",
             "message": "An error occurred during layer-wise SHAP analysis.",
             "errors": errors
+        })
+
+
+@app.route('/api/compare-methods', methods=['POST'])
+def compare_methods():
+    """
+    Runs all available SHAP methods and returns a side-by-side
+    comparison plot and attribution shift heatmap.
+
+    Request body (all optional):
+    {
+        "n_profiles": 100,
+        "use_synthetic": false,
+        "methods": ["classical", "causal", "layerwise"]
+    }
+    """
+    errors = []
+    try:
+        req_data = request.json or {}
+        n_profiles = int(req_data.get('n_profiles', 100))
+        use_synthetic = bool(req_data.get('use_synthetic', False))
+        requested_methods = req_data.get(
+            'methods', ['classical', 'causal', 'layerwise']
+        )
+
+        start_time = time.time()
+
+        model_path = os.path.join(MODELS_DIR, 'model.pkl')
+        if not os.path.exists(model_path):
+            raise FileNotFoundError('Model not found. Run setup first.')
+        model = joblib.load(model_path)
+
+        config_path = os.path.join(CONFIG_DIR, 'hyperparameters.yaml')
+        metadata_path = os.path.join(DATA_DIR, 'processed', 'metadata.json')
+        generator = ProfileGenerator(config_path, metadata_path, DATA_DIR)
+
+        profiles = generator.generate(
+            n_profiles=n_profiles,
+            use_synthetic=use_synthetic
+        )
+        assert profiles.shape[1] == generator.n_features
+
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+
+        background_samples = config['shap'].get('background_samples', 100)
+        X_train = pd.read_parquet(
+            os.path.join(DATA_DIR, 'processed', 'X_train.parquet')
+        )
+        background_data = X_train.sample(
+            n=min(background_samples, len(X_train)), random_state=42
+        )
+
+        dag_config_path = os.path.join(CONFIG_DIR, 'causal_dag.yaml')
+        model_info_path = os.path.join(MODELS_DIR, 'model_info.json')
+
+        method_results = {}
+        method_labels = {
+            'classical': 'Classical SHAP',
+            'causal':    'Causal SHAP',
+            'layerwise': 'Layerwise SHAP',
+        }
+
+        for method_key in requested_methods:
+            try:
+                if method_key == 'classical':
+                    exp = ClassicalSHAPExplainer(
+                        model, background_data,
+                        generator.feature_names, config,
+                        model_info_path=model_info_path
+                    )
+                    result = exp.explain(profiles)
+
+                elif method_key == 'causal':
+                    exp = CausalSHAPExplainer(
+                        model, background_data,
+                        generator.feature_names, config,
+                        dag_config_path,
+                        model_info_path=model_info_path
+                    )
+                    result = exp.explain(profiles)
+
+                elif method_key == 'layerwise':
+                    exp = LayerwiseSHAPExplainer(
+                        model, background_data,
+                        generator.feature_names, config,
+                        model_info_path=model_info_path
+                    )
+                    result = exp.explain(profiles)
+
+                else:
+                    errors.append(f"Unknown method: {method_key}")
+                    continue
+
+                label = method_labels.get(method_key, method_key)
+                method_results[label] = result
+
+            except Exception as method_err:
+                import traceback
+                errors.append(
+                    f"Method {method_key} failed: {str(method_err)}\n"
+                    f"{traceback.format_exc()}"
+                )
+
+        if not method_results:
+            raise ValueError("All requested methods failed. Check errors.")
+
+        comparison_bar = plot_method_comparison(method_results)
+        shift_heatmap = plot_attribution_shift_table(method_results)
+
+        attribution_tables = {}
+        for label, result in method_results.items():
+            total = sum(result['mean_abs_shap'])
+            table = []
+            for feat, imp in zip(
+                result['feature_names'], result['mean_abs_shap']
+            ):
+                table.append({
+                    'feature': feat,
+                    'mean_abs_shap': float(imp),
+                    'pct': float(imp / total * 100) if total > 0 else 0.0
+                })
+            table.sort(key=lambda x: x['mean_abs_shap'], reverse=True)
+            for i, row in enumerate(table):
+                row['rank'] = i + 1
+            attribution_tables[label] = table
+
+        computation_time = time.time() - start_time
+        model_info = get_model_info()
+
+        return jsonify({
+            'status': 'success',
+            'methods_run': list(method_results.keys()),
+            'model_info': {
+                'auc': model_info.get('auc_test'),
+                'n_features': model_info.get('n_features'),
+            },
+            'profiles_generated': len(profiles),
+            'computation_time_seconds': round(computation_time, 2),
+            'attribution_tables': attribution_tables,
+            'plots': {
+                'method_comparison': comparison_bar,
+                'attribution_shift': shift_heatmap
+            },
+            'errors': errors
+        })
+
+    except Exception as e:
+        import traceback
+        errors.append(str(e))
+        errors.append(traceback.format_exc())
+        return jsonify({
+            'status': 'error',
+            'message': 'Comparison analysis failed.',
+            'errors': errors
         })
 
 
