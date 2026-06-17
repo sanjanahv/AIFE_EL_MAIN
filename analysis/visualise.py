@@ -408,3 +408,59 @@ def plot_attribution_shift_table(results: dict) -> str:
 
     plt.tight_layout()
     return fig_to_base64(fig)
+
+
+def plot_divergence_signal(
+    interventional_result: dict,
+    conditional_result: dict
+) -> str:
+    """
+    Bar chart of Δᵢ = φᵢ^interventional - φᵢ^conditional per feature.
+
+    Positive Δᵢ: model relies on feature more than natural data warrants
+                 → potential proxy signal
+    Negative Δᵢ: conditional SHAP assigns more importance (rare)
+
+    Parameters:
+        interventional_result: shap_result dict from Method 2 (classical)
+        conditional_result:    shap_result dict from Method 5 (conditional)
+
+    Returns:
+        base64 PNG string
+    """
+    features = interventional_result['feature_names']
+    int_vals = np.array(interventional_result['mean_abs_shap'])
+    cond_vals = np.array(conditional_result['mean_abs_shap'])
+
+    delta = int_vals - cond_vals
+
+    # Sort by |Δᵢ| descending
+    order = np.argsort(np.abs(delta))[::-1]
+    sorted_feats = [features[i] for i in order]
+    sorted_delta = delta[order]
+
+    colors = [METHOD_COLORS[2] if d >= 0 else METHOD_COLORS[5]
+              for d in sorted_delta]
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    bars = ax.barh(sorted_feats, sorted_delta, color=colors, alpha=0.85,
+                   edgecolor='white', linewidth=0.5)
+
+    ax.axvline(0, color='#94A3B8', linewidth=1.2, linestyle='--')
+    ax.set_xlabel('Δᵢ = φᵢ^interventional − φᵢ^conditional')
+    ax.set_title(
+        'Divergence Signal Δᵢ per Feature\n'
+        '(Positive = model relies on feature beyond natural data distribution → proxy risk)',
+        fontsize=12, fontweight='bold'
+    )
+
+    # Annotate bars
+    for bar, val in zip(bars, sorted_delta):
+        xpos = val + 0.0005 if val >= 0 else val - 0.0005
+        ha = 'left' if val >= 0 else 'right'
+        ax.text(xpos, bar.get_y() + bar.get_height() / 2,
+                f'{val:+.4f}', va='center', ha=ha,
+                fontsize=8, color='#F1F5F9')
+
+    plt.tight_layout()
+    return fig_to_base64(fig)

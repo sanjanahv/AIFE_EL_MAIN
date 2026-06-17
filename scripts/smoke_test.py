@@ -99,7 +99,53 @@ print("    depth keys               :", sorted(r4["layerwise_contributions"].key
 _ = plot_layerwise_depth_heatmap(r4)
 print("    Method 4 OK")
 
+# -- 8. Method 5 -- Conditional SHAP ----------------------------------
+print("\n[8] Testing Method 5 -- Conditional SHAP (3 profiles only -- slow)...")
+from explainers.method5_conditional_shap import ConditionalSHAPExplainer
+m5 = ConditionalSHAPExplainer(model, background, feature_names, config,
+                               model_info_path=model_info_path)
+profiles_3 = profiles.iloc[:3]
+r5 = m5.explain(profiles_3)
+print("    shap_values shape :", len(r5["shap_values"]), "x", len(r5["shap_values"][0]))
+print("    base_value        :", round(r5["base_value"], 4))
+print("    sampling_method   :", r5["sampling_method"])
+print("    Method 5 OK")
+
+# -- 9. Method 6 -- Unified SHAP --------------------------------------
+print("\n[9] Testing Method 6 -- Unified SHAP (3 profiles -- slow)...")
+from explainers.method6_unified_shap import UnifiedSHAPExplainer
+m6 = UnifiedSHAPExplainer(model, background, feature_names, config,
+                           dag_config_path=dag_path,
+                           model_info_path=model_info_path)
+r6 = m6.explain(profiles_3)
+print("    shap_values shape :", len(r6["shap_values"]), "x", len(r6["shap_values"][0]))
+print("    base_value        :", round(r6["base_value"], 4))
+print("    n_stages          :", r6["n_stages"])
+print("    Method 6 OK")
+
+# -- 10. Method 7 -- Counterfactual ------------------------------------
+print("\n[10] Testing Method 7 -- Counterfactual (3 profiles)...")
+from explainers.method7_counterfactual import CounterfactualExplainer
+feat_meta_path = "config/feature_metadata.yaml"
+m7 = CounterfactualExplainer(model, background, feature_names, config,
+                              dag_config_path=dag_path,
+                              feature_metadata_path=feat_meta_path,
+                              model_info_path=model_info_path)
+r7 = m7.explain(profiles_3)
+print("    shap_values shape :", len(r7["shap_values"]), "x", len(r7["shap_values"][0]))
+print("    counterfactuals   :", len(r7["counterfactuals"]))
+print("    success_rate      : %.1f%%" % r7["success_rate"])
+# Verify immutable features are unchanged
+for cf in r7["counterfactuals"]:
+    for change in cf["changes"]:
+        feat = change["feature"]
+        assert feat not in r7["immutable_features"], (
+            "IMMUTABLE FEATURE '%s' was changed!" % feat
+        )
+print("    immutability check: PASSED")
+print("    Method 7 OK")
+
 print("\n" + "=" * 60)
-print("ALL TESTS PASSED — pipeline is ready.")
+print("ALL TESTS PASSED -- pipeline is ready (all 7 methods).")
 print("Run: python app.py  ->  open http://localhost:5000")
 print("=" * 60)

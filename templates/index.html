@@ -239,6 +239,9 @@
     .btn-m2 { background: linear-gradient(135deg, var(--m2), #2563EB); color: white; box-shadow: 0 4px 16px var(--m2-glow); }
     .btn-m3 { background: linear-gradient(135deg, var(--m3), #059669); color: white; box-shadow: 0 4px 16px var(--m3-glow); }
     .btn-m4 { background: linear-gradient(135deg, var(--m4), #D97706); color: white; box-shadow: 0 4px 16px var(--m4-glow); }
+    .btn-m5 { background: linear-gradient(135deg, var(--m5, #8B5CF6), #6D28D9); color: white; box-shadow: 0 4px 16px rgba(139,92,246,0.25); }
+    .btn-m6 { background: linear-gradient(135deg, var(--m6, #EF4444), #B91C1C); color: white; box-shadow: 0 4px 16px rgba(239,68,68,0.25); }
+    .btn-m7 { background: linear-gradient(135deg, var(--m7, #F59E0B), #B45309); color: white; box-shadow: 0 4px 16px rgba(245,158,11,0.25); }
     .btn-icon { font-size: 16px; }
     .spin { animation: spin 0.8s linear infinite; }
 
@@ -644,6 +647,15 @@
     <button class="btn btn-m4" id="btnM4" onclick="runAnalysis('layerwise')">
       <span class="btn-icon">🔬</span> Output 4 — Layer-wise SHAP
     </button>
+    <button class="btn btn-m5" id="btnM5" onclick="runAnalysis('conditional')">
+      <span class="btn-icon">🌊</span> Output 5 — Conditional SHAP
+    </button>
+    <button class="btn btn-m6" id="btnM6" onclick="runAnalysis('unified')">
+      <span class="btn-icon">⚛</span> Output 6 — Unified SHAP
+    </button>
+    <button class="btn btn-m7" id="btnM7" onclick="runAnalysis('counterfactual')">
+      <span class="btn-icon">🔄</span> Output 7 — SHAP + Counterfactuals
+    </button>
     <button id="btn-compare" class="mode-btn" onclick="runAnalysis('compare')" style="padding: 12px 22px; border-radius: 8px; font-size: 14px; font-weight: 600; border: none; cursor: pointer; background: linear-gradient(135deg, #8B5CF6, #6D28D9); color: white; box-shadow: 0 4px 16px rgba(139,92,246,0.25);">
       <span class="btn-icon">⚖️</span> Compare All Methods
     </button>
@@ -688,6 +700,9 @@
       <button class="tab-btn"        id="tabBtn-table"     onclick="switchTab('table')">📋 Attribution Table</button>
       <button class="tab-btn"        id="tabBtn-special"   onclick="switchTab('special')" id="specialTab">🧬 Method Details</button>
       <button class="tab-btn"        id="tabBtn-compare"   onclick="switchTab('compare')" style="display:none">⚖️ Compare All</button>
+      <button class="tab-btn" id="tabBtn-conditional"    onclick="switchTab('conditional')"    style="display:none">🌊 Conditional</button>
+      <button class="tab-btn" id="tabBtn-unified"        onclick="switchTab('unified')"        style="display:none">⚛ Unified</button>
+      <button class="tab-btn" id="tabBtn-counterfactual" onclick="switchTab('counterfactual')" style="display:none">🔄 SHAP+CF</button>
     </div>
 
     <!-- TAB: OVERVIEW -->
@@ -863,7 +878,33 @@
         </div>
         <img class="plot-img" id="attributionShiftPlot" onclick="openModal(this.src)">
       </div>
+      <div class="card full" style="margin-top:16px" id="divergenceCard" style="display:none">
+        <div class="card-header">
+          <div class="card-title">Divergence Signal Δᵢ</div>
+          <div class="card-badge">φᵢ^interventional − φᵢ^conditional</div>
+        </div>
+        <img class="plot-img" id="divergenceSignalPlot" onclick="openModal(this.src)">
+      </div>
       <div id="compareTablesContainer" style="margin-top:16px"></div>
+    </div>
+
+    <!-- TAB: CONDITIONAL -->
+    <div class="tab-panel fade-in" id="panel-conditional" style="display:none">
+      <h3 style="margin-bottom:12px">Output 5 — Conditional SHAP</h3>
+      <div id="results-conditional"></div>
+    </div>
+
+    <!-- TAB: UNIFIED -->
+    <div class="tab-panel fade-in" id="panel-unified" style="display:none">
+      <h3 style="margin-bottom:12px">Output 6 — Unified SHAP (φᵢ^nature)</h3>
+      <div id="results-unified"></div>
+    </div>
+
+    <!-- TAB: COUNTERFACTUAL -->
+    <div class="tab-panel fade-in" id="panel-counterfactual" style="display:none">
+      <h3 style="margin-bottom:12px">Output 7 — Unified SHAP + Counterfactuals</h3>
+      <div id="results-counterfactual"></div>
+      <div id="counterfactual-details" style="margin-top:24px"></div>
     </div>
   </div><!-- /resultsSection -->
 
@@ -887,11 +928,11 @@
     <span style="color:var(--border2);padding:0 4px">›</span>
     <span class="fp-node fp-done">Output 4<br>Layerwise</span>
     <span style="color:var(--border2);padding:0 4px">›</span>
-    <span class="fp-node fp-future">Output 5<br>Conditional</span>
+    <span class="fp-node fp-active">Output 5<br>Conditional</span>
     <span style="color:var(--border2);padding:0 4px">›</span>
-    <span class="fp-node fp-future">Output 6<br>Unified</span>
+    <span class="fp-node fp-active">Output 6<br>Unified</span>
     <span style="color:var(--border2);padding:0 4px">›</span>
-    <span class="fp-node fp-future">Output 7<br>SHAP+CF</span>
+    <span class="fp-node fp-active">Output 7<br>SHAP+CF</span>
   </div>
   <span>AIFEEL · LightGBM + SHAP · UCI Adult Income</span>
 </footer>
@@ -926,7 +967,7 @@ document.addEventListener('DOMContentLoaded', () => {
       } else {
         dot.classList.remove('loading'); dot.classList.add('err');
         text.textContent = 'Model not ready — run python run_setup.py first';
-        ['btnM2','btnM3','btnM4'].forEach(id => document.getElementById(id).disabled = true);
+        ['btnM2','btnM3','btnM4','btnM5','btnM6','btnM7'].forEach(id => document.getElementById(id).disabled = true);
       }
     })
     .catch(() => {
@@ -949,7 +990,7 @@ function switchTab(name) {
    RUN ANALYSIS
 ═══════════════════════════════════════════════ */
 async function runAnalysis(mode) {
-  const btns = ['btnM2','btnM3','btnM4'].map(id => document.getElementById(id));
+  const btns = ['btnM2','btnM3','btnM4','btnM5','btnM6','btnM7'].map(id => document.getElementById(id));
   btns.forEach(b => b.disabled = true);
 
   const overlay = document.getElementById('loadingOverlay');
@@ -959,15 +1000,26 @@ async function runAnalysis(mode) {
   // Style loader by method
   loaderRing.className = 'loader-ring' + (mode === 'causal' ? ' causal' : mode === 'layerwise' ? ' layerwise' : '');
 
-  document.getElementById('loadingTitle').textContent =
-    mode === 'causal'    ? 'Running Causal SHAP — this takes ~2 min…' :
-    mode === 'layerwise' ? 'Running Layer-wise SHAP analysis…' :
-                           'Running Classical SHAP analysis…';
-
-  document.getElementById('loadingSub').textContent =
-    mode === 'causal' ? 'Computing coalition weights per-sample against the causal DAG' :
-    mode === 'layerwise' ? 'Walking decision paths across the tree ensemble' :
-                           'TreeExplainer with interventional sampling';
+  const loadingTitles = {
+    'classical':      'Running Classical SHAP analysis…',
+    'causal':         'Running Causal SHAP — this takes ~2 min…',
+    'layerwise':      'Running Layer-wise SHAP analysis…',
+    'conditional':    'Running Conditional SHAP analysis…',
+    'unified':        'Running Unified SHAP analysis…',
+    'counterfactual': 'Running SHAP + Counterfactual analysis…',
+    'compare':        'Comparing all SHAP methods…'
+  };
+  const loadingSubs = {
+    'classical':      'TreeExplainer with interventional sampling',
+    'causal':         'Computing coalition weights per-sample against the causal DAG',
+    'layerwise':      'Walking decision paths across the tree ensemble',
+    'conditional':    'TreeExplainer with tree_path_dependent perturbation',
+    'unified':        'Computing φᵢ^nature with DAG-weighted coalitions',
+    'counterfactual': 'Generating counterfactual profiles & computing unified SHAP',
+    'compare':        'Running all methods and computing comparisons'
+  };
+  document.getElementById('loadingTitle').textContent = loadingTitles[mode] || 'Running analysis…';
+  document.getElementById('loadingSub').textContent = loadingSubs[mode] || 'This may take a moment';
 
   document.getElementById('errorBanner').style.display = 'none';
   document.getElementById('resultsSection').classList.remove('show');
@@ -986,10 +1038,13 @@ async function runAnalysis(mode) {
   }, mode === 'causal' ? 30000 : 4000);
 
   const endpoints = {
-    'classical':  '/api/run-analysis',
-    'causal':     '/api/run-causal-analysis',
-    'layerwise':  '/api/run-layerwise-analysis',
-    'compare':    '/api/compare-methods'
+    'classical':     '/api/run-analysis',
+    'causal':        '/api/run-causal-analysis',
+    'layerwise':     '/api/run-layerwise-analysis',
+    'conditional':   '/api/run-conditional-analysis',
+    'unified':       '/api/run-unified-analysis',
+    'counterfactual':'/api/run-counterfactual-analysis',
+    'compare':       '/api/compare-methods'
   };
   const endpoint = endpoints[mode] || '/api/run-analysis';
 
@@ -1044,7 +1099,16 @@ function renderCompareResults(data) {
   
   setImg('methodComparisonPlot', p.method_comparison);
   setImg('attributionShiftPlot', p.attribution_shift);
-  
+
+  // Show divergence signal plot if available
+  const divCard = document.getElementById('divergenceCard');
+  if (p.divergence_signal) {
+    setImg('divergenceSignalPlot', p.divergence_signal);
+    if (divCard) divCard.style.display = 'block';
+  } else {
+    if (divCard) divCard.style.display = 'none';
+  }
+
   const container = document.getElementById('compareTablesContainer');
   container.innerHTML = '';
   for (const [method, table] of Object.entries(data.attribution_tables)) {
@@ -1101,18 +1165,19 @@ function renderResults(data, mode) {
 
   // Method badge
   const badge = document.getElementById('methodBadge');
-  if (mode === 'causal') {
-    badge.className = 'results-method-badge badge-m3';
-    badge.textContent = '🔗 Output 3 — Causal Coalition SHAP';
-  } else if (mode === 'layerwise') {
-    badge.className = 'results-method-badge badge-m4';
-    badge.textContent = '🔬 Output 4 — Layer-wise Local SHAP';
-  } else {
-    badge.className = 'results-method-badge badge-m2';
-    badge.textContent = '⚡ Output 2 — Classical SHAP';
-  }
+  const badgeConfig = {
+    'classical':      { cls: 'badge-m2', text: '⚡ Output 2 — Classical SHAP' },
+    'causal':         { cls: 'badge-m3', text: '🔗 Output 3 — Causal Coalition SHAP' },
+    'layerwise':      { cls: 'badge-m4', text: '🔬 Output 4 — Layer-wise Local SHAP' },
+    'conditional':    { cls: 'badge-m3', text: '🌊 Output 5 — Conditional SHAP' },
+    'unified':        { cls: 'badge-m4', text: '⚛ Output 6 — Unified SHAP' },
+    'counterfactual': { cls: 'badge-m4', text: '🔄 Output 7 — SHAP + Counterfactuals' },
+  };
+  const bc = badgeConfig[mode] || badgeConfig['classical'];
+  badge.className = 'results-method-badge ' + bc.cls;
+  badge.textContent = bc.text;
 
-  // Plots — always shown
+  // Plots — always shown (some may be missing for certain modes)
   setImg('summaryBar',    p.summary_bar);
   setImg('predictionDist',p.prediction_distribution);
   setImg('shapVsWeights', p.shap_vs_weights);
@@ -1131,13 +1196,47 @@ function renderResults(data, mode) {
     renderCausalSection(data, p);
   } else if (mode === 'layerwise') {
     renderLayerwiseSection(data, p);
+  } else if (mode === 'conditional' || mode === 'unified' || mode === 'counterfactual') {
+    // These methods use their own tab panels, no classical section needed
   } else {
     document.getElementById('classicalSection').style.display = 'block';
   }
 
+  // Show the tab button for this mode (for conditional/unified/counterfactual)
+  const tabBtnId = 'tabBtn-' + mode;
+  const tabBtnEl = document.getElementById(tabBtnId);
+  if (tabBtnEl) tabBtnEl.style.display = 'inline-block';
+
+  // Render counterfactual-specific results (1g)
+  if (mode === 'counterfactual' && data.counterfactual_results) {
+    renderCounterfactualDetails(data.counterfactual_results);
+  }
+
+  // Render divergence plot for conditional mode
+  if (mode === 'conditional' && p.divergence_signal) {
+    const condPanel = document.getElementById('results-conditional');
+    if (condPanel) {
+      condPanel.innerHTML = `
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header">
+            <div class="card-title">Divergence Signal Δᵢ</div>
+            <div class="card-badge">φᵢ^interventional − φᵢ^conditional</div>
+          </div>
+          <img class="plot-img" src="data:image/png;base64,${p.divergence_signal}" onclick="openModal(this.src)" alt="Divergence signal">
+        </div>
+      `;
+    }
+  }
+
   // Show results
   document.getElementById('resultsSection').classList.add('show');
-  switchTab('overview');
+
+  // Switch to the appropriate tab
+  if (mode === 'conditional' || mode === 'unified' || mode === 'counterfactual') {
+    switchTab(mode);
+  } else {
+    switchTab('overview');
+  }
 
   // Scroll to results
   document.getElementById('resultsSection').scrollIntoView({ behavior: 'smooth' });
@@ -1268,6 +1367,60 @@ function renderLayerwiseSection(data, p) {
   }
 
   if (p.layerwise_depth_heatmap) setImg('layerwiseHeatmap', p.layerwise_depth_heatmap);
+}
+
+/* ═══════════════════════════════════════════════
+   COUNTERFACTUAL DETAILS (Fix 1g)
+═══════════════════════════════════════════════ */
+function renderCounterfactualDetails(cfResult) {
+  const cfContainer = document.getElementById('counterfactual-details');
+  if (!cfContainer) return;
+
+  let html = `
+    <div style="background:#1E293B; border-radius:8px; padding:16px; margin-bottom:16px;">
+      <h4 style="color:#F1F5F9; margin-bottom:8px">Counterfactual Summary</h4>
+      <p style="color:#94A3B8">Success Rate: <strong style="color:#10B981">${cfResult.success_rate.toFixed(1)}%</strong>
+         (${cfResult.n_found} of ${cfResult.n_total} profiles flipped)</p>
+      <p style="color:#94A3B8">Mutable: ${cfResult.mutable_features.join(', ')}</p>
+      <p style="color:#94A3B8">Immutable: <span style="color:#EF4444">${cfResult.immutable_features.join(', ')}</span></p>
+    </div>`;
+
+  // Show first 5 counterfactuals
+  const cfs = cfResult.counterfactuals.slice(0, 5);
+  cfs.forEach((cf, idx) => {
+    const status = cf.found
+      ? `<span style="color:#10B981">✅ Flipped</span>`
+      : `<span style="color:#EF4444">❌ Not flipped</span>`;
+    html += `<div style="background:#1E293B; border-radius:8px; padding:16px; margin-bottom:12px;">
+      <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+        <strong style="color:#F1F5F9">Sample ${idx + 1}</strong>
+        ${status}
+      </div>
+      <p style="color:#94A3B8; font-size:13px">
+        Prob: ${(cf.original_proba * 100).toFixed(1)}% → ${(cf.counterfactual_proba * 100).toFixed(1)}%
+        &nbsp;|&nbsp; Changes: ${cf.n_changes}
+      </p>`;
+    if (cf.changes && cf.changes.length > 0) {
+      html += `<table style="width:100%; font-size:12px; margin-top:8px; border-collapse:collapse;">
+        <tr style="color:#64748B">
+          <th style="text-align:left; padding:4px">Feature</th>
+          <th style="text-align:right; padding:4px">Original</th>
+          <th style="text-align:right; padding:4px">Counterfactual</th>
+          <th style="text-align:right; padding:4px">|SHAP|</th>
+        </tr>`;
+      cf.changes.forEach(ch => {
+        html += `<tr style="color:#94A3B8; border-top:1px solid #334155">
+          <td style="padding:4px">${ch.feature}</td>
+          <td style="text-align:right; padding:4px">${ch.original.toFixed(2)}</td>
+          <td style="text-align:right; padding:4px; color:#10B981">${ch.counterfactual.toFixed(2)}</td>
+          <td style="text-align:right; padding:4px">${ch.shap_magnitude.toFixed(4)}</td>
+        </tr>`;
+      });
+      html += `</table>`;
+    }
+    html += `</div>`;
+  });
+  cfContainer.innerHTML = html;
 }
 
 /* ═══════════════════════════════════════════════
